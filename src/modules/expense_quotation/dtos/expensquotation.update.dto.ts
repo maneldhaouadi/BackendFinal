@@ -1,8 +1,9 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { UpdateExpensQuotationUploadDto } from './expensquotation-upload.update.dto';
-import { IsOptional } from 'class-validator';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { CreateExpensQuotationDto } from './expensquotation.create.dto';
+import { ResponseQuotationUploadDto } from 'src/modules/quotation/dtos/quotation-upload.response.dto';
 
 export class UpdateExpensQuotationDto extends CreateExpensQuotationDto {
   @ApiProperty({ example: 1, type: Number })
@@ -15,4 +16,10 @@ export class UpdateExpensQuotationDto extends CreateExpensQuotationDto {
   @ApiProperty({ required: false })
   @IsOptional()
   createInvoice: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(25)
+  sequentialNumbr?: string;
+
 }

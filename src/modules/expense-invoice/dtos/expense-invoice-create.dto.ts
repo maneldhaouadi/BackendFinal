@@ -134,4 +134,20 @@ export class ExpenseCreateInvoiceDto {
   @IsOptional()
   @IsInt()
   taxWithholdingId?: number;
+
+  @ApiProperty({
+    example: faker.string.alphanumeric(10),
+    type: String,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(25)
+  sequentialNumbr?: string;
+
+  @ApiProperty({
+    example: 1,
+    type: Number,
+  })
+  pdfFileId?: number;
+  
 }

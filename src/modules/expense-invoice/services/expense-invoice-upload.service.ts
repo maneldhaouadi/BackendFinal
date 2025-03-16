@@ -72,24 +72,26 @@ export class ExpenseInvoiceUploadService {
     uploadId: number,
   ): Promise<ExpenseInvoiceUploadEntity> {
     return this.invoiceUploadRepository.save({
-      expenseInvoice: { id: invoiceId }, // corrected: using the entity reference
-      uploadId,
+      expenseInvoice: { id: invoiceId },
+      uploadId, // Assurez-vous d'ajouter le filePath ici
     });
   }
+  
 
   async duplicate(id: number, invoiceId: number): Promise<ExpenseInvoiceUploadEntity> {
     const originalInvoiceUpload = await this.findOneById(id);
     const duplicatedUpload = await this.storageService.duplicate(
       originalInvoiceUpload.uploadId,
     );
-
+  
     const duplicatedInvoiceUploadEntity = await this.invoiceUploadRepository.save({
       expenseInvoice: { id: invoiceId },
       uploadId: duplicatedUpload.id,
     });
-
+  
     return duplicatedInvoiceUploadEntity;
   }
+  
 
   async duplicateMany(
     ids: number[],
@@ -122,6 +124,11 @@ export class ExpenseInvoiceUploadService {
 
   async getTotal(): Promise<number> {
     return this.invoiceUploadRepository.getTotalCount();
+  }
+  async findByInvoiceId(invoiceId: number): Promise<ExpenseInvoiceUploadEntity[]> {
+    return this.invoiceUploadRepository.findAll({
+      where: { expenseInvoice: { id: invoiceId } },
+    });
   }
 }
 

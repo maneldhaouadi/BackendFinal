@@ -20,16 +20,18 @@ import { ExpenseInvoiceUploadEntity } from './expense-invoice-file.entity';
 import { TaxEntity } from 'src/modules/tax/repositories/entities/tax.entity';
 import { TaxWithholdingEntity } from 'src/modules/tax-withholding/repositories/entities/tax-withholding.entity';
 import { EXPENSE_INVOICE_STATUS } from '../../enums/expense-invoice-status.enum';
-import { PaymentInvoiceEntryEntity } from 'src/modules/payment/repositories/entities/payment-invoice-entry.entity';
 import { ExpensQuotationEntity } from 'src/modules/expense_quotation/repositories/entities/expensquotation.entity';
+import { ExpensePaymentInvoiceEntryEntity } from 'src/modules/expense-payment/repositories/entities/expense-payment-invoice-entry.entity';
+import { UploadEntity } from 'src/common/storage/repositories/entities/upload.entity';
 
 @Entity('expense_invoice')
 export class ExpenseInvoiceEntity extends EntityHelper {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', length: 25, unique: true })
+  @Column({ type: 'varchar', length: 25, unique: true,nullable:true})
   sequential: string;
+  
 
   @Column({ nullable: true })
   date: Date;
@@ -109,9 +111,9 @@ export class ExpenseInvoiceEntity extends EntityHelper {
   @OneToMany(() => ExpenseInvoiceUploadEntity, (upload) => upload.expenseInvoice)
   uploads: ExpenseInvoiceUploadEntity[];
 
-  @ManyToOne(() => ExpensQuotationEntity, (quotation) => quotation.invoices)
-  @JoinColumn({ name: 'quotationId' })  // Vérifiez que c'est bien le nom de la colonne dans la base
-  quotation: ExpensQuotationEntity;
+  @ManyToOne(() => ExpensQuotationEntity)
+@JoinColumn({ name: 'quotationId' })  // Assurez-vous d'utiliser le bon nom de colonne
+quotation: ExpensQuotationEntity;
 
   @Column({ type: 'int', nullable: true })
   quotationId: number;  
@@ -123,9 +125,10 @@ export class ExpenseInvoiceEntity extends EntityHelper {
   @Column({ type: 'int' })
   taxStampId: number;
 
-  //expensepayment no payment:attention
-  @OneToMany(() => PaymentInvoiceEntryEntity, (entry) => entry.invoice)
-  payments: PaymentInvoiceEntryEntity[];
+
+
+  @OneToMany(() => ExpensePaymentInvoiceEntryEntity, (entry) => entry.expenseInvoice)
+payments: ExpensePaymentInvoiceEntryEntity[];
 
   @ManyToOne(() => TaxWithholdingEntity)
   @JoinColumn({ name: 'taxWithholdingId' })
@@ -136,5 +139,16 @@ export class ExpenseInvoiceEntity extends EntityHelper {
 
   @Column({ type: 'float', nullable: true })
   taxWithholdingAmount: number;
+  
+  @Column({ type: 'varchar', length: 25, nullable: true })
+sequentialNumbr: string;
+
+//ajout au migration!
+@OneToOne(() => UploadEntity, { nullable: true })
+@JoinColumn({ name: 'pdfFileId' })
+uploadPdfField: UploadEntity;
+
+@Column({ type: 'int', nullable: true })
+pdfFileId: number;
 }
 

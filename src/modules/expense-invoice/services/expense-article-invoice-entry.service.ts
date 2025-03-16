@@ -212,44 +212,45 @@ export class ExpenseArticleInvoiceEntryService {
     id: number,
     invoiceId: number,
   ): Promise<ExpenseArticleInvoiceEntryEntity> {
-    // Fetch the existing entry
+    // Fetch the existing entry with its taxes
     const existingEntry = await this.findOneByCondition({
       filter: `id||$eq||${id}`,
       join: 'expenseArticleInvoiceEntryTaxes',
     });
-
+  
+    if (!existingEntry) {
+      throw new Error(`Entry with id ${id} not found`);
+    }
+  
     // Duplicate the taxes associated with this entry
-    const duplicatedTaxes = existingEntry.articleInvoiceEntryTaxes.map(
-      (taxEntry) => ({
-        taxId: taxEntry.taxId,
-      }),
-    );
-
+    const duplicatedTaxes = existingEntry.articleInvoiceEntryTaxes?.map((taxEntry) => ({
+      taxId: taxEntry.taxId,
+    })) || [];
+  
     // Create the duplicated entry
-    const duplicatedEntry = {
+    const duplicatedEntry = this.articleInvoiceEntryRepository.create({
       ...existingEntry,
-      invoiceId: invoiceId,
-      id: undefined,
-      articleInvoiceEntryTaxes: duplicatedTaxes, // Attach duplicated taxes
+      id: undefined, // Remove the existing ID
+      expenseInvoiceId: invoiceId, // Assign the new invoice ID
+      expenseArticleInvoiceEntryTaxes: undefined, // Remove reference to existing taxes
       createdAt: undefined,
       updatedAt: undefined,
-    };
-
+    });
+  
     // Save the duplicated entry
-    const newEntry =
-      await this.articleInvoiceEntryRepository.save(duplicatedEntry);
-
+    const newEntry = await this.articleInvoiceEntryRepository.save(duplicatedEntry);
+  
     // Save the new tax entries for the duplicated entry
     await this.articleInvoiceEntryTaxService.saveMany(
       duplicatedTaxes.map((tax) => ({
         taxId: tax.taxId,
-        articleInvoiceEntryId: newEntry.id,
+        articleInvoiceEntryId: newEntry.id, // Use the new entry's ID
       })),
     );
-
+  
     return newEntry;
   }
-
+  
   async duplicateMany(
     ids: number[],
     invoiceId: number,

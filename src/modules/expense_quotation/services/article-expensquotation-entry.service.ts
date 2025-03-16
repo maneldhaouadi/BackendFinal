@@ -139,16 +139,25 @@ export class ArticleExpensQuotationEntryService {
         // Fetch the existing entry
         const existingEntry = await this.findOneByCondition({
             filter: `id||$eq||${id}`,
-            join: 'expensearticleExpensQuotationEntryTaxes',
+            join: 'articleExpensQuotationEntryTaxes',
         });
-
+    
+        if (!existingEntry) {
+            throw new Error('Entry not found');
+        }
+    
+        // Ensure articleQuotationEntryTaxes is defined
+        if (!existingEntry.articleQuotationEntryTaxes) {
+            existingEntry.articleQuotationEntryTaxes = [];
+        }
+    
         // Duplicate the taxes associated with this entry
         const duplicatedTaxes = existingEntry.articleQuotationEntryTaxes.map(
             (taxEntry) => ({
                 taxId: taxEntry.taxId,
             }),
         );
-
+    
         // Create the duplicated entry
         const duplicatedEntry = {
             ...existingEntry,
@@ -158,11 +167,11 @@ export class ArticleExpensQuotationEntryService {
             createdAt: undefined,
             updatedAt: undefined,
         };
-
+    
         // Save the duplicated entry
         const newEntry =
             await this.expensQuotationEntryRepository.save(duplicatedEntry);
-
+    
         // Save the new tax entries for the duplicated entry
         await this.expensQuotationEntryTaxService.saveMany(
             duplicatedTaxes.map((tax) => ({
@@ -170,7 +179,7 @@ export class ArticleExpensQuotationEntryService {
                 articleExpensQuotationEntryId: newEntry.id,
             })),
         );
-
+    
         return newEntry;
     }
 
@@ -185,4 +194,23 @@ export class ArticleExpensQuotationEntryService {
         }
         return duplicatedEntries;
     }
+
+
+    async softDelete(id: number): Promise<ArticleExpensQuotationEntryEntity> {
+        const entry = await this.expensQuotationEntryRepository.findByCondition({
+          where: { id, deletedAt: null },
+          relations: { articleExpensQuotationEntryTaxes: true },
+        });
+        await this.expensQuotationEntryTaxService.softDeleteMany(
+          entry.articleExpensQuotationEntryTaxes.map((taxEntry) => taxEntry.id),
+        );
+        return this.expensQuotationEntryRepository.softDelete(id);
+      }
+    
+      async softDeleteMany(ids: number[]): Promise<ArticleExpensQuotationEntryEntity[]> {
+        const entries = await Promise.all(
+          ids.map(async (id) => this.softDelete(id)),
+        );
+        return entries;
+      }
 }

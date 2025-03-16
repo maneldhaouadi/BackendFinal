@@ -3,6 +3,8 @@ import { ActivityEntity } from 'src/modules/activity/repositories/entities/activ
 import { AddressEntity } from 'src/modules/address/repositories/entities/address.entity';
 import { CabinetEntity } from 'src/modules/cabinet/repositories/entities/cabinet.entity';
 import { CurrencyEntity } from 'src/modules/currency/repositories/entities/currency.entity';
+import { ExpenseInvoiceEntity } from 'src/modules/expense-invoice/repositories/entities/expense-invoice.entity';
+import { ExpensQuotationEntity } from 'src/modules/expense_quotation/repositories/entities/expensquotation.entity';
 import { FirmInterlocutorEntryEntity } from 'src/modules/firm-interlocutor-entry/repositories/entities/firm-interlocutor-entry.entity';
 import { InvoiceEntity } from 'src/modules/invoice/repositories/entities/invoice.entity';
 import { PaymentConditionEntity } from 'src/modules/payment-condition/repositories/entity/payment-condition.entity';
@@ -85,7 +87,7 @@ export class FirmEntity extends EntityHelper {
   @OneToMany(() => FirmInterlocutorEntryEntity, (entry) => entry.firm)
   @JoinTable()
   interlocutorsToFirm: FirmInterlocutorEntryEntity[];
-
+/*
   @OneToMany(() => QuotationEntity, (entry) => entry.firm)
   @JoinTable()
   quotations: QuotationEntity[];
@@ -93,4 +95,12 @@ export class FirmEntity extends EntityHelper {
   @OneToMany(() => InvoiceEntity, (entry) => entry.firm)
   @JoinTable()
   invoices: InvoiceEntity[];
+*/
+  @OneToMany(() => ExpensQuotationEntity, (entry) => entry.firm)
+  @JoinTable()
+  quotations: ExpensQuotationEntity[];
+
+  @OneToMany(() => ExpenseInvoiceEntity, (entry) => entry.firm)
+  @JoinTable()
+  invoices: ExpenseInvoiceEntity[];
 }

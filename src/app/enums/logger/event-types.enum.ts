@@ -43,6 +43,10 @@ export enum EVENT_TYPE {
   SELLING_PAYMENT_UPDATED = 'payment_updated',
   SELLING_PAYMENT_DELETED = 'payment_deleted',
 
+  BUYING_PAYMENT_CREATED = 'payment_created',
+  BUYING_PAYMENT_UPDATED = 'payment_updated',
+  BUYING_PAYMENT_DELETED = 'payment_deleted',
+
   //Content
   ACTIVITY_CREATED = 'activity_created',
   ACTIVITY_UPDATED = 'activity_updated',
@@ -56,6 +60,10 @@ export enum EVENT_TYPE {
   DEFAULT_CONDITION_UPDATED = 'default_condition_updated',
   DEFAULT_CONDITION_MASS_UPDATED = 'default_conditions_updated',
   DEFAULT_CONDITION_DELETED = 'default_condition_deleted',
+
+  EXPENSE_PAYMENT_CONDITION_CREATED = 'payment_condition_created',
+  EXPENSE_PAYMENT_CONDITION_UPDATED = 'payment_condition_updated',
+  EXPENSE_PAYMENT_CONDITION_DELETED = 'payment_condition_deleted',
 
   PAYMENT_CONDITION_CREATED = 'payment_condition_created',
   PAYMENT_CONDITION_UPDATED = 'payment_condition_updated',
@@ -74,6 +82,13 @@ BUYING_INVOICE_UPDATED = 'invoice_updated',
 BUYING_INVOICE_DELETED = 'invoice_deleted',
 BUYING_INVOICE_PRINTED = 'invoice_printed',
 BUYING_INVOICE_DUPLICATED = 'invoice_duplicated',
+//BUYING Quotation
+BUYING_QUOTATION_CREATED = 'quotation_created',
+BUYING_QUOTATION_UPDATED = 'quotation_updated',
+BUYING_QUOTATION_DELETED = 'quotation_deleted',
+BUYING_QUOTATION_PRINTED = 'quotation_printed',
+BUYING_QUOTATION_INVOICED = 'quotation_invoiced',
+BUYING_QUOTATION_DUPLICATED = 'quotation_duplicated',
 
 }
 

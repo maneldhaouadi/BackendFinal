@@ -1,4 +1,4 @@
-import { Injectable, StreamableFile } from "@nestjs/common";
+import { Injectable, NotFoundException, StreamableFile } from "@nestjs/common";
 import { ExpenseInvoiceRepository } from "../repositories/repository/expense-invoice.repository";
 import { ExpenseArticleInvoiceEntryService } from "./expense-article-invoice-entry.service";
 import { ExpenseInvoiceUploadService } from "./expense-invoice-upload.service";
@@ -6,7 +6,6 @@ import { BankAccountService } from "src/modules/bank-account/services/bank-accou
 import { CurrencyService } from "src/modules/currency/services/currency.service";
 import { FirmService } from "src/modules/firm/services/firm.service";
 import { InterlocutorService } from "src/modules/interlocutor/services/interlocutor.service";
-import { ExpenseInvoiceSequenceService } from "./expense-invoice-sequence.service";
 import { ExpenseInvoiceMetaDataService } from "./expense-invoice-meta-data.service";
 import { TaxService } from "src/modules/tax/services/tax.service";
 import { TaxWithholdingService } from "src/modules/tax-withholding/services/tax-withholding.service";
@@ -21,20 +20,15 @@ import { FindManyOptions, FindOneOptions, UpdateResult } from "typeorm";
 import { PageDto } from "src/common/database/dtos/database.page.dto";
 import { ExpenseResponseInvoiceDto } from "../dtos/expense-invoice.response.dto";
 import { PageMetaDto } from "src/common/database/dtos/database.page-meta.dto";
-import { ExpenseResponseInvoiceRangeDto } from "../dtos/expense-invoice-range.response.dto";
-import { parseSequential } from "src/utils/sequence.utils";
 import { Transactional } from "@nestjs-cls/transactional";
 import { ExpenseCreateInvoiceDto } from "../dtos/expense-invoice-create.dto";
 import { EXPENSE_INVOICE_STATUS } from "../enums/expense-invoice-status.enum";
 import { ExpenseUpdateInvoiceDto } from "../dtos/expense-invoice.update.dto";
-import { ExpenseArticleInvoiceEntryEntity } from "../repositories/entities/expense-article-invoice-entry.entity";
-import { ciel } from "src/utils/number.utils";
-import { ExpenseResponseInvoiceUploadDto } from "../dtos/expense-invoice-upload.response.dto";
 import { QueryDeepPartialEntity } from "typeorm/query-builder/QueryPartialEntity";
 import { ExpenseDuplicateInvoiceDto } from "../dtos/expense-invoice.duplicate.dto";
-import { ExpenseUpdateInvoiceSequenceDto } from "../dtos/expense-invoice-sequence.update.dto";
-import { ExpenseInvoiceSequence } from "../interfaces/expense-invoice-sequence.interface";
 import { ExpensQuotationEntity } from "src/modules/expense_quotation/repositories/entities/expensquotation.entity";
+import { StorageService } from "src/common/storage/services/storage.service";
+import { ExpenseResponseInvoiceUploadDto } from "../dtos/expense-invoice-upload.response.dto";
 
 @Injectable()
 export class ExpenseInvoiceService {
@@ -48,60 +42,16 @@ export class ExpenseInvoiceService {
     private readonly currencyService: CurrencyService,
     private readonly firmService: FirmService,
     private readonly interlocutorService: InterlocutorService,
-    private readonly invoiceSequenceService: ExpenseInvoiceSequenceService,
     private readonly invoiceMetaDataService: ExpenseInvoiceMetaDataService,
     private readonly taxService: TaxService,
     private readonly taxWithholdingService: TaxWithholdingService,
+    private readonly storageService: StorageService,
 
     //abstract services
     private readonly calculationsService: InvoicingCalculationsService,
     private readonly pdfService: PdfService,
   ) {}
-
-  async downloadPdf(id: number, template: string): Promise<StreamableFile> {
-    const invoice = await this.findOneByCondition({
-      filter: `id||$eq||${id}`,
-      join: new String().concat(
-        'firm,',
-        'cabinet,',
-        'currency,',
-        'bankAccount,',
-        'interlocutor,',
-        'cabinet.address,',
-        'expenseInvoiceMetaData,',
-        'firm.deliveryAddress,',
-        'firm.invoicingAddress,',
-        'articleExpenseEntries,',
-        'articleExpenseEntries.article,',
-        'articleExpenseEntries.expenseArticleInvoiceEntryTaxes,',  // Corrigé ici
-        'articleExpenseEntries.expenseArticleInvoiceEntryTaxes.tax'  // Corrigé ici
-      ),
-    });
-  
-    const digitsAferComma = invoice.currency.digitAfterComma;
-    if (invoice) {
-      const data = {
-        meta: {
-          ...invoice.expenseInvoiceMetaData,
-          type: 'DEVIS',
-        },
-        invoice: {
-          ...invoice,
-          date: format(invoice.date, 'dd/MM/yyyy'),
-          dueDate: format(invoice.dueDate, 'dd/MM/yyyy'),
-          taxSummary: invoice.expenseInvoiceMetaData.taxSummary,
-          subTotal: invoice.subTotal.toFixed(digitsAferComma),
-          total: invoice.total.toFixed(digitsAferComma),
-        },
-      };
-  
-      const pdfBuffer = await this.pdfService.generatePdf(data, template);
-      return new StreamableFile(pdfBuffer);
-    } else {
-      throw new ExpenseInvoiceNotFoundException();
-    }
-  }  
-
+ 
   async findOneById(id: number): Promise<ExpenseInvoiceEntity> {
     const invoice = await this.invoiceRepository.findOneById(id);
     if (!invoice) {
@@ -154,161 +104,149 @@ export class ExpenseInvoiceService {
     return new PageDto(entities, pageMetaDto);
   }
 
-  async findInvoicesByRange(id: number): Promise<ExpenseResponseInvoiceRangeDto> {
-    // Get the current sequential
-    const currentSequential = await this.invoiceSequenceService.get();
-    const lastSequence = currentSequential.value.next - 1;
-
-    // fetch the invoice
-    const invoice = await this.findOneById(id);
-    const { next } = parseSequential(invoice.sequential);
-
-    // determine the previous and next invoices
-    const previousInvoice =
-      next != 1
-        ? await this.findOneByCondition({
-            filter: `sequential||$ends||${next - 1}`,
-          })
-        : null;
-
-    const nextInvoice =
-      next != lastSequence
-        ? await this.findOneByCondition({
-            filter: `sequential||$ends||${next + 1}`,
-          })
-        : null;
-
-    return {
-      next: nextInvoice,
-      previous: previousInvoice,
-    };
-  }
 
   @Transactional()
-  async save(createInvoiceDto: ExpenseCreateInvoiceDto): Promise<ExpenseInvoiceEntity> {
-    // Parallelize fetching firm, bank account, and currency, as they are independent
-    const [firm, bankAccount, currency] = await Promise.all([
-      this.firmService.findOneByCondition({
-        filter: `id||$eq||${createInvoiceDto.firmId}`,
-      }),
-      createInvoiceDto.bankAccountId
-        ? this.bankAccountService.findOneById(createInvoiceDto.bankAccountId)
-        : Promise.resolve(null),
-      createInvoiceDto.currencyId
-        ? this.currencyService.findOneById(createInvoiceDto.currencyId)
-        : Promise.resolve(null),
-    ]);
+async save(createInvoiceDto: ExpenseCreateInvoiceDto): Promise<ExpenseInvoiceEntity> {
+  const [firm, bankAccount, currency] = await Promise.all([
+    this.firmService.findOneByCondition({
+      filter: `id||$eq||${createInvoiceDto.firmId}`,
+    }),
+    createInvoiceDto.bankAccountId
+      ? this.bankAccountService.findOneById(createInvoiceDto.bankAccountId)
+      : Promise.resolve(null),
+    createInvoiceDto.currencyId
+      ? this.currencyService.findOneById(createInvoiceDto.currencyId)
+      : Promise.resolve(null),
+  ]);
 
-    if (!firm) {
-      throw new Error('Firm not found');
-    }
-
-    // Check interlocutor existence
-    await this.interlocutorService.findOneById(createInvoiceDto.interlocutorId);
-
-    // Save article entries if provided
-    const articleEntries =
-      createInvoiceDto.articleInvoiceEntries &&
-      (await this.articleInvoiceEntryService.saveMany(
-        createInvoiceDto.articleInvoiceEntries,
-      ));
-
-    if (!articleEntries) {
-      throw new Error('Article entries are missing');
-    }
-
-    // Calculate financial information
-    const { subTotal, total } =
-      this.calculationsService.calculateLineItemsTotal(
-        articleEntries.map((entry) => entry.total),
-        articleEntries.map((entry) => entry.subTotal),
-      );
-
-    // Fetch tax stamp if provided
-    const taxStamp = createInvoiceDto.taxStampId
-      ? await this.taxService.findOneById(createInvoiceDto.taxStampId)
-      : null;
-
-    // Apply general discount
-    const totalAfterGeneralDiscount =
-      this.calculationsService.calculateTotalDiscount(
-        total,
-        createInvoiceDto.discount,
-        createInvoiceDto.discount_type,
-        taxStamp?.value || 0,
-      );
-
-    // Format articleEntries as lineItems for tax calculations
-    const lineItems = await this.articleInvoiceEntryService.findManyAsLineItem(
-      articleEntries.map((entry) => entry.id),
-    );
-
-    // Calculate tax summary and fetch tax details in parallel
-    const taxSummary = await Promise.all(
-      this.calculationsService
-        .calculateTaxSummary(lineItems)
-        .map(async (item) => {
-          const tax = await this.taxService.findOneById(item.taxId);
-
-          return {
-            ...item,
-            label: tax.label,
-            // If the tax is a rate (percentage), multiply by 100 for percentage display,
-            // otherwise use the fixed amount directly.
-            value: tax.isRate ? tax.value * 100 : tax.value,
-            isRate: tax.isRate, // You can also return this flag for further use.
-          };
-        }),
-    );
-
-    // Fetch the latest sequential number for invoice
-    const sequential = await this.invoiceSequenceService.getSequential();
-
-    // Save invoice metadata
-    const invoiceMetaData = await this.invoiceMetaDataService.save({
-      ...createInvoiceDto.invoiceMetaData,
-      taxSummary,
-    });
-
-    // Ensure taxWithholding.rate is valid and calculate the withholding amount
-    let taxWithholdingAmount = 0;
-    if (createInvoiceDto.taxWithholdingId) {
-      const taxWithholding = await this.taxWithholdingService.findOneById(
-        createInvoiceDto.taxWithholdingId,
-      );
-
-      if (taxWithholding.rate !== undefined && taxWithholding.rate !== null) {
-        taxWithholdingAmount =
-          totalAfterGeneralDiscount * (taxWithholding.rate / 100);
-      }
-    }
-
-    // Save the invoice entity
-    const invoice = await this.invoiceRepository.save({
-      ...createInvoiceDto,
-      bankAccountId: bankAccount ? bankAccount.id : null,
-      currencyId: currency ? currency.id : firm.currencyId,
-      //this will be changed to fit with the connected cabinet
-      cabinetId: 1,
-      sequential,
-      articleExpenseEntries: articleEntries,
-      expenseInvoiceMetaData: invoiceMetaData,
-      subTotal,
-      taxWithholdingAmount: taxWithholdingAmount || 0,
-      total: totalAfterGeneralDiscount,
-    });
-
-    // Handle file uploads if they exist
-    if (createInvoiceDto.uploads) {
-      await Promise.all(
-        createInvoiceDto.uploads.map((u) =>
-          this.invoiceUploadService.save(invoice.id, u.uploadId),
-        ),
-      );
-    }
-
-    return invoice;
+  if (!firm) {
+    throw new Error('Firm not found');
   }
+
+  await this.interlocutorService.findOneById(createInvoiceDto.interlocutorId);
+
+  const articleEntries =
+    createInvoiceDto.articleInvoiceEntries &&
+    (await this.articleInvoiceEntryService.saveMany(
+      createInvoiceDto.articleInvoiceEntries,
+    ));
+
+  if (!articleEntries) {
+    throw new Error('Article entries are missing');
+  }
+
+  const { subTotal, total } =
+    this.calculationsService.calculateLineItemsTotal(
+      articleEntries.map((entry) => entry.total),
+      articleEntries.map((entry) => entry.subTotal),
+    );
+
+  const taxStamp = createInvoiceDto.taxStampId
+    ? await this.taxService.findOneById(createInvoiceDto.taxStampId)
+    : null;
+
+  const totalAfterGeneralDiscount =
+    this.calculationsService.calculateTotalDiscount(
+      total,
+      createInvoiceDto.discount,
+      createInvoiceDto.discount_type,
+      taxStamp?.value || 0,
+    );
+
+  const lineItems = await this.articleInvoiceEntryService.findManyAsLineItem(
+    articleEntries.map((entry) => entry.id),
+  );
+
+  const taxSummary = await Promise.all(
+    this.calculationsService
+      .calculateTaxSummary(lineItems)
+      .map(async (item) => {
+        const tax = await this.taxService.findOneById(item.taxId);
+        return {
+          ...item,
+          label: tax.label,
+          value: tax.isRate ? tax.value * 100 : tax.value,
+          isRate: tax.isRate,
+        };
+      }),
+  );
+
+  // ✅ Vérifier et générer le numéro séquentiel
+  let sequentialNumbr = createInvoiceDto.sequentialNumbr || await this.generateSequentialNumber();
+  console.log('Sequential Number (Backend):', sequentialNumbr);
+
+  if (!/^INV-\d+$/.test(sequentialNumbr)) {
+    throw new Error('Invalid invoice number format. Expected format: INV-XXXX');
+  }
+
+  const invoiceMetaData = await this.invoiceMetaDataService.save({
+    ...createInvoiceDto.invoiceMetaData,
+    taxSummary,
+  });
+
+  let taxWithholdingAmount = 0;
+  if (createInvoiceDto.taxWithholdingId) {
+    const taxWithholding = await this.taxWithholdingService.findOneById(
+      createInvoiceDto.taxWithholdingId,
+    );
+
+    if (taxWithholding.rate !== undefined && taxWithholding.rate !== null) {
+      taxWithholdingAmount =
+        totalAfterGeneralDiscount * (taxWithholding.rate / 100);
+    }
+  }
+
+  let uploadPdfField = null;
+  if (createInvoiceDto.pdfFileId) {
+    uploadPdfField = await this.storageService.findOneById(
+      createInvoiceDto.pdfFileId,
+    );
+    if (!uploadPdfField) {
+      throw new NotFoundException('Uploaded PDF file not found');
+    }
+  }
+
+  const invoice = await this.invoiceRepository.save({
+    ...createInvoiceDto,
+    sequential: sequentialNumbr,
+    bankAccountId: bankAccount ? bankAccount.id : null,
+    currencyId: currency ? currency.id : firm.currencyId,
+    cabinetId: 1,
+    sequentialNumbr,
+    articleExpenseEntries: articleEntries,
+    expenseInvoiceMetaData: invoiceMetaData,
+    subTotal,
+    taxWithholdingAmount: taxWithholdingAmount || 0,
+    total: totalAfterGeneralDiscount,
+    uploadPdfField: uploadPdfField ? uploadPdfField.id : null,
+  });
+
+  if (createInvoiceDto.uploads) {
+    await Promise.all(
+      createInvoiceDto.uploads.map((u) =>
+        this.invoiceUploadService.save(invoice.id, u.uploadId),
+      ),
+    );
+  }
+  return invoice;
+}
+
+/**
+ * ✅ Fonction pour générer un numéro séquentiel au format INV-XXXX
+ */
+private async generateSequentialNumber(): Promise<string> {
+  const lastInvoice = await this.invoiceRepository.findOne({
+    order: { id: 'DESC' },
+  });
+
+  const lastNumber = lastInvoice?.sequentialNumbr
+    ? parseInt(lastInvoice.sequentialNumbr.split('-')[1], 10)
+    : 0;
+
+  return `INV-${lastNumber + 1}`;
+}
+
+
 
   async saveMany(
     createInvoiceDtos: ExpenseCreateInvoiceDto[],
@@ -327,8 +265,8 @@ export class ExpenseInvoiceService {
       quotationId: quotation.id,
       currencyId: quotation.currencyId,
       bankAccountId: quotation.bankAccountId,
-      //interlocutorId: quotation.interlocutor,
-      //firmId: quotation.firm,
+      interlocutorId: quotation.interlocutorId,
+      firmId: quotation.firmId,
       discount: quotation.discount,
       discount_type: quotation.discount_type,
       object: quotation.object,
@@ -337,10 +275,10 @@ export class ExpenseInvoiceService {
       dueDate: null,
       articleInvoiceEntries: quotation.expensearticleQuotationEntries.map((entry) => {
         return {
-          unit_price: entry.unitPrice,
+          unit_price: entry.unit_price,
           quantity: entry.quantity,
           discount: entry.discount,
-          discount_type: entry.discountType,
+          discount_type: entry.discount_type,
           subTotal: entry.subTotal,
           total: entry.total,
           articleId: entry.article.id,
@@ -353,61 +291,80 @@ export class ExpenseInvoiceService {
     });
   }
 
-  @Transactional()
   async update(
     id: number,
     updateInvoiceDto: ExpenseUpdateInvoiceDto,
   ): Promise<ExpenseInvoiceEntity> {
-    // Retrieve the existing invoice with necessary relations
-    const { uploads: existingUploads, ...existingInvoice } =
-      await this.findOneByCondition({
-        filter: `id||$eq||${id}`,
-        join: 'articleExpenseEntries,expenseInvoiceMetaData,uploads,taxWithholding',
-      });
-
-    // Fetch and validate related entities
-    const [firm, bankAccount, currency, interlocutor] = await Promise.all([
+    // Récupérer l'invoice existante
+    const existingInvoice = await this.invoiceRepository.findOne({ where: { id } });
+    if (!existingInvoice) {
+      throw new Error('Invoice not found');
+    }
+  
+    // Log des IDs des fichiers reçus du frontend
+    console.log('PDF File ID reçu du frontend:', updateInvoiceDto.pdfFileId);
+    console.log('IDs des fichiers supplémentaires reçus du frontend:', updateInvoiceDto.uploads?.map(u => u.uploadId));
+  
+    // Récupérer les fichiers uploadés existants sous forme de tableau
+    const existingUploadEntities = await this.invoiceUploadService.findByInvoiceId(id);
+  
+    // Mapper les entités vers des DTOs
+    const existingUploads = existingUploadEntities.map((upload) => ({
+      id: upload.id,
+      uploadId: upload.uploadId,
+      // Ajoutez d'autres propriétés nécessaires ici
+    }));
+  
+    // Gérer les fichiers uploadés
+    const { keptUploads, newUploads, eliminatedUploads } = await this.updateExpenseInvoiceUpload(
+      id,
+      updateInvoiceDto,
+      existingUploads,
+    );
+  
+    // Logique pour récupérer ou conserver le numéro séquentiel existant
+    const sequentialNumbr = updateInvoiceDto.sequentialNumbr || existingInvoice.sequentialNumbr || null;
+   
+  
+  
+    // Si tu as des validations supplémentaires à faire (ex : vérifier firm, bankAccount, etc.)
+    const [firm, bankAccount, currency] = await Promise.all([
       this.firmService.findOneByCondition({
         filter: `id||$eq||${updateInvoiceDto.firmId}`,
       }),
       updateInvoiceDto.bankAccountId
         ? this.bankAccountService.findOneById(updateInvoiceDto.bankAccountId)
-        : null,
+        : Promise.resolve(null),
       updateInvoiceDto.currencyId
         ? this.currencyService.findOneById(updateInvoiceDto.currencyId)
-        : null,
-      updateInvoiceDto.interlocutorId
-        ? this.interlocutorService.findOneById(updateInvoiceDto.interlocutorId)
-        : null,
+        : Promise.resolve(null),
     ]);
-
-    // Soft delete old article entries to prepare for new ones
-    const existingArticles =
-      await this.articleInvoiceEntryService.softDeleteMany(
-        existingInvoice.articleExpenseEntries.map((entry) => entry.id),
-      );
-
-    // Save new article entries
-    const articleEntries: ExpenseArticleInvoiceEntryEntity[] =
-      updateInvoiceDto.articleInvoiceEntries
-        ? await this.articleInvoiceEntryService.saveMany(
-            updateInvoiceDto.articleInvoiceEntries,
-          )
-        : existingArticles;
-
-    // Calculate the subtotal and total for the new entries
+  
+    if (!firm) {
+      throw new Error('Firm not found');
+    }
+  
+    // Récupérer les autres données nécessaires (comme les entrées d'articles, calculs, etc.)
+    const articleEntries =
+      updateInvoiceDto.articleInvoiceEntries &&
+      (await this.articleInvoiceEntryService.saveMany(
+        updateInvoiceDto.articleInvoiceEntries,
+      ));
+  
+    if (!articleEntries) {
+      throw new Error('Article entries are missing');
+    }
+  
     const { subTotal, total } =
       this.calculationsService.calculateLineItemsTotal(
         articleEntries.map((entry) => entry.total),
         articleEntries.map((entry) => entry.subTotal),
       );
-
-    // Fetch tax stamp if provided
+  
     const taxStamp = updateInvoiceDto.taxStampId
       ? await this.taxService.findOneById(updateInvoiceDto.taxStampId)
       : null;
-
-    // Apply general discount
+  
     const totalAfterGeneralDiscount =
       this.calculationsService.calculateTotalDiscount(
         total,
@@ -415,80 +372,132 @@ export class ExpenseInvoiceService {
         updateInvoiceDto.discount_type,
         taxStamp?.value || 0,
       );
-
-    // Convert article entries to line items for further calculations
+  
     const lineItems = await this.articleInvoiceEntryService.findManyAsLineItem(
       articleEntries.map((entry) => entry.id),
     );
-
-    // Calculate tax summary (handle both percentage and fixed taxes)
+  
     const taxSummary = await Promise.all(
       this.calculationsService
         .calculateTaxSummary(lineItems)
         .map(async (item) => {
           const tax = await this.taxService.findOneById(item.taxId);
-
           return {
             ...item,
             label: tax.label,
-            // Check if the tax is rate-based or a fixed amount
-            rate: tax.isRate ? tax.value * 100 : tax.value, // handle both types
+            value: tax.isRate ? tax.value * 100 : tax.value,
             isRate: tax.isRate,
           };
         }),
     );
-
-    // Save or update the invoice metadata with the updated tax summary
+  
+    // Utilise le sequentialNumbr dans l'insertion de la facture
     const invoiceMetaData = await this.invoiceMetaDataService.save({
-      ...existingInvoice.expenseInvoiceMetaData,
       ...updateInvoiceDto.invoiceMetaData,
       taxSummary,
     });
-
-    // Ensure taxWithholding.rate is valid and calculate the withholding amount
+  
     let taxWithholdingAmount = 0;
     if (updateInvoiceDto.taxWithholdingId) {
       const taxWithholding = await this.taxWithholdingService.findOneById(
         updateInvoiceDto.taxWithholdingId,
       );
-
+  
       if (taxWithholding.rate !== undefined && taxWithholding.rate !== null) {
-        taxWithholdingAmount = ciel(
-          totalAfterGeneralDiscount * (taxWithholding.rate / 100),
-          currency.digitAfterComma + 1,
-        );
+        taxWithholdingAmount =
+          totalAfterGeneralDiscount * (taxWithholding.rate / 100);
       }
     }
-
-    // Handle uploads - manage existing, new, and eliminated uploads
-    const {
-      keptItems: keptUploads,
-      newItems: newUploads,
-      eliminatedItems: eliminatedUploads,
-    } = await this.invoiceRepository.updateAssociations({
-      updatedItems: updateInvoiceDto.uploads,
-      existingItems: existingUploads,
-      onDelete: (id: number) => this.invoiceUploadService.softDelete(id),
-      onCreate: (entity: ExpenseResponseInvoiceUploadDto) =>
-        this.invoiceUploadService.save(entity.invoiceId, entity.uploadId),
-    });
-
-    // Save and return the updated invoice with all updated details
-    return this.invoiceRepository.save({
+  
+    // ✅ Gestion du fichier PDF
+    let pdfFileId = existingInvoice.pdfFileId; // Conserver l'ID du fichier PDF existant par défaut
+  
+    // Si un nouveau fichier PDF est fourni, mettre à jour l'ID
+    if (updateInvoiceDto.pdfFileId) {
+      console.log('PDF File ID reçu du frontend:', updateInvoiceDto.pdfFileId); // Vérifiez l'ID du fichier PDF
+      pdfFileId = updateInvoiceDto.pdfFileId;
+    }
+  
+    // Mettre à jour la facture avec le même numéro séquentiel ou un nouveau
+    const updatedInvoice = await this.invoiceRepository.save({
       ...updateInvoiceDto,
+      sequential: sequentialNumbr, // Assurez-vous de passer sequentialNumbr ici
       bankAccountId: bankAccount ? bankAccount.id : null,
       currencyId: currency ? currency.id : firm.currencyId,
-      interlocutorId: interlocutor ? interlocutor.id : null,
+      cabinetId: 1,
+      sequentialNumbr, // Utilisez sequentialNumbr ici
       articleExpenseEntries: articleEntries,
       expenseInvoiceMetaData: invoiceMetaData,
-      taxStampId: taxStamp ? taxStamp.id : null,
       subTotal,
-      taxWithholdingAmount,
+      taxWithholdingAmount: taxWithholdingAmount || 0,
       total: totalAfterGeneralDiscount,
-      uploads: [...keptUploads, ...newUploads, ...eliminatedUploads],
+      pdfFileId, // Inclure l'ID du fichier PDF (nouveau ou existant)
     });
+  
+    // Gestion des fichiers uploadés
+    if (updateInvoiceDto.uploads) {
+      console.log('Uploads reçus du frontend:', updateInvoiceDto.uploads); // Vérifiez les fichiers uploadés
+      await Promise.all(
+        updateInvoiceDto.uploads.map((u) => {
+          console.log('Upload ID:', u.uploadId); // Vérifiez chaque ID de fichier uploadé
+          return this.invoiceUploadService.save(updatedInvoice.id, u.uploadId);
+        }),
+      );
+    }
+  
+    console.log('Updated Invoice:', updatedInvoice); // Vérifiez la facture mise à jour
+    return updatedInvoice;
   }
-
+  async updateExpenseInvoiceUpload(
+    id: number,
+    updateInvoiceDto: ExpenseUpdateInvoiceDto,
+    existingUploads: ExpenseResponseInvoiceUploadDto[], // Renommer le type pour correspondre au contexte
+  ) {
+    const newUploads = [];
+    const keptUploads = [];
+    const eliminatedUploads = [];
+  
+    if (updateInvoiceDto.uploads) {
+        try {
+            // Gestion des fichiers existants
+            for (const upload of existingUploads) {
+                const exists = updateInvoiceDto.uploads.some(
+                    (u) => u.uploadId === upload.uploadId, // Utiliser uploadId pour la correspondance
+                );
+                if (!exists) {
+                    console.log(`Suppression du fichier avec l'uploadId ${upload.uploadId}`);
+                    const deletedUpload = await this.invoiceUploadService.softDelete(upload.id); // Suppression douce
+                    eliminatedUploads.push(deletedUpload);
+                } else {
+                    keptUploads.push(upload); // Conserver le fichier existant
+                }
+            }
+  
+            // Ajout des nouveaux fichiers
+            for (const upload of updateInvoiceDto.uploads) {
+                if (!upload.id) { // Vérifier si c'est un nouveau fichier
+                    console.log(`Ajout d'un nouveau fichier avec l'uploadId ${upload.uploadId}`);
+                    const newUpload = await this.invoiceUploadService.save(id, upload.uploadId); // Enregistrer le nouveau fichier
+                    newUploads.push(newUpload);
+                }
+            }
+        } catch (error) {
+            console.error('Erreur lors de la mise à jour des fichiers uploadés :', error);
+            throw new Error('Erreur lors de la mise à jour des fichiers uploadés');
+        }
+    }
+  
+    // Log des fichiers conservés, ajoutés et supprimés
+    console.log('Fichiers conservés:', keptUploads);
+    console.log('Nouveaux fichiers ajoutés:', newUploads);
+    console.log('Fichiers supprimés:', eliminatedUploads);
+  
+    return {
+        keptUploads, // Fichiers conservés
+        newUploads, // Nouveaux fichiers ajoutés
+        eliminatedUploads, // Fichiers supprimés
+    };
+  }
   async updateFields(
     id: number,
     dict: QueryDeepPartialEntity<ExpenseInvoiceEntity>,
@@ -496,50 +505,70 @@ export class ExpenseInvoiceService {
     return this.invoiceRepository.update(id, dict);
   }
 
-  async duplicate(
-    duplicateInvoiceDto: ExpenseDuplicateInvoiceDto,
-  ): Promise<ExpenseResponseInvoiceDto> {
+  async duplicate(duplicateInvoiceDto: ExpenseDuplicateInvoiceDto): Promise<ExpenseResponseInvoiceDto> {
+    // Récupérer la facture existante
     const existingInvoice = await this.findOneByCondition({
       filter: `id||$eq||${duplicateInvoiceDto.id}`,
-      join: new String().concat(
-        'invoiceMetaData,',
-        'articleInvoiceEntries,',
-        'articleInvoiceEntries.articleInvoiceEntryTaxes,',
-        'uploads',
-      ),
+      join: 'expenseInvoiceMetaData,articleExpenseEntries,articleExpenseEntries.expenseArticleInvoiceEntryTaxes,uploads,uploadPdfField',
     });
+  
+    if (!existingInvoice) {
+      throw new Error(`Invoice with id ${duplicateInvoiceDto.id} not found`);
+    }
+  
+    // Dupliquer les métadonnées de la facture
     const invoiceMetaData = await this.invoiceMetaDataService.duplicate(
       existingInvoice.expenseInvoiceMetaData.id,
     );
-    const sequential = await this.invoiceSequenceService.getSequential();
+  
+    // Exclure 'id', 'sequential' et 'sequentialNumbr' avant de dupliquer
+    const { id, sequential, sequentialNumbr, ...invoiceData } = existingInvoice;
+  
+    // Créer une nouvelle facture sans les fichiers pour l'instant
     const invoice = await this.invoiceRepository.save({
-      ...existingInvoice,
-      id: undefined,
-      sequential,
+      ...invoiceData, // Copie tout sauf 'id', 'sequential' et 'sequentialNumbr'
+      id: undefined, // Nouvelle facture sans l'ID original
+      sequential: null, // Ne pas conserver l'ancien numéro séquentiel
+      sequentialNumbr: null, // Ne pas copier sequentialNumbr
       expenseInvoiceMetaData: invoiceMetaData,
-      articleExpenseEntries: [],
-      uploads: [],
-      amountPaid: 0,
-      status: EXPENSE_INVOICE_STATUS.Draft,
+      articleExpenseEntries: [], // Les articles seront dupliqués plus tard
+      uploads: [], // Les uploads seront dupliqués plus tard
+      amountPaid: 0, // Réinitialiser le montant payé
+      status: EXPENSE_INVOICE_STATUS.Draft, // Statut de la nouvelle facture
     });
-
-    const articleInvoiceEntries =
-      await this.articleInvoiceEntryService.duplicateMany(
+  
+    // Dupliquer les articles si nécessaire
+    if (existingInvoice.articleExpenseEntries?.length > 0) {
+      const articleInvoiceEntries = await this.articleInvoiceEntryService.duplicateMany(
         existingInvoice.articleExpenseEntries.map((entry) => entry.id),
         invoice.id,
       );
-
-    const uploads = duplicateInvoiceDto.includeFiles
-      ? await this.invoiceUploadService.duplicateMany(
-          existingInvoice.uploads.map((upload) => upload.id),
-          invoice.id,
-        )
-      : [];
-
+      invoice.articleExpenseEntries = articleInvoiceEntries;
+    }
+  
+    // Gérer les fichiers joints uniquement si includeFiles est true
+    let uploads = [];
+    if (duplicateInvoiceDto.includeFiles && existingInvoice.uploads) {
+      const uploadIds = existingInvoice.uploads.map((upload) => upload.id);
+      uploads = await this.invoiceUploadService.duplicateMany(uploadIds, invoice.id);
+    }
+  
+    // Gérer le fichier PDF uniquement si includeFiles est true
+    let uploadPdfField = null;
+    if (duplicateInvoiceDto.includeFiles && existingInvoice.uploadPdfField) {
+      const existingPdfFile = await this.storageService.findOneById(existingInvoice.uploadPdfField.id);
+      if (!existingPdfFile) {
+        throw new Error('Existing PDF file not found');
+      }
+      const duplicatedPdfFile = await this.storageService.duplicate(existingPdfFile.id);
+      uploadPdfField = duplicatedPdfFile.id; // Récupérer l'ID du fichier PDF dupliqué
+    }
+  
+    // Associer les fichiers dupliqués (uploads et PDF) à la nouvelle facture
     return this.invoiceRepository.save({
       ...invoice,
-      articleExpenseEntries:articleInvoiceEntries,
       uploads,
+      uploadPdfField: uploadPdfField ? uploadPdfField : null, // Associer le fichier PDF dupliqué
     });
   }
 
@@ -548,12 +577,25 @@ export class ExpenseInvoiceService {
   ): Promise<ExpenseInvoiceEntity[]> {
     return this.invoiceRepository.updateMany(updateInvoiceDtos);
   }
-
-  async updateInvoiceSequence(
-    updatedSequenceDto: ExpenseUpdateInvoiceSequenceDto,
-  ): Promise<ExpenseInvoiceSequence> {
-    return (await this.invoiceSequenceService.set(updatedSequenceDto)).value;
+  async deletePdfFile(invoiceId: number): Promise<void> {
+    const invoice = await this.invoiceRepository.findOneById(invoiceId);
+    if (!invoice) {
+      throw new Error("Quotation not found");
+    }
+  
+    if (invoice.pdfFileId) {
+      // Supprimer le fichier PDF de la base de données
+      await this.storageService.delete(invoice.pdfFileId);
+  
+      // Mettre à jour le devis pour retirer l'ID du fichier PDF
+      await this.invoiceRepository.save({
+        ...invoice,
+        pdfFileId: null,
+        uploadPdfField: null,
+      });
+    }
   }
+
 
   async softDelete(id: number): Promise<ExpenseInvoiceEntity> {
     await this.findOneById(id);
@@ -567,4 +609,20 @@ export class ExpenseInvoiceService {
   async getTotal(): Promise<number> {
     return this.invoiceRepository.getTotalCount();
   }
+  async updateInvoiceStatusIfExpired(invoiceId: number): Promise<ExpenseInvoiceEntity> {
+    const invoice = await this.findOneById(invoiceId);
+    const currentDate = new Date();
+    const dueDate = new Date(invoice.dueDate);
+  
+    if (dueDate < currentDate && invoice.status !== EXPENSE_INVOICE_STATUS.Expired) {
+      invoice.status = EXPENSE_INVOICE_STATUS.Expired;
+      return this.invoiceRepository.save(invoice);
+    }
+  
+    return invoice;
+  }
 }
+
+
+
+
