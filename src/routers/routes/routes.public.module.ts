@@ -10,6 +10,8 @@ import { ActivityModule } from 'src/modules/activity/activity.module';
 import { ActivityController } from 'src/modules/activity/controllers/activity.controller';
 import { AddressModule } from 'src/modules/address/address.module';
 import { AddressController } from 'src/modules/address/controllers/address.controller';
+import { ArticleHistoryModule } from 'src/modules/article-history/article-history.module';
+import { ArticleHistoryController } from 'src/modules/article-history/controllers/article-history.controller';
 import { ArticleModule } from 'src/modules/article/article.module';
 import { ArticleController } from 'src/modules/article/controllers/article.controller';
 import { BankAccountModule } from 'src/modules/bank-account/bank-account.module';
@@ -22,8 +24,6 @@ import { CurrencyController } from 'src/modules/currency/controllers/currency.co
 import { CurrencyModule } from 'src/modules/currency/currency.module';
 import { DefaultConditionController } from 'src/modules/default-condition/controllers/default-condition.controller';
 import { DefaultConditionModule } from 'src/modules/default-condition/default-condition.module';
-import { WebhookController } from 'src/modules/dialogflow-management/controllers/webhook.controller';
-import { dialogflowModule } from 'src/modules/dialogflow-management/dialogflow-management.module';
 import { ExpenseInvoiceController } from 'src/modules/expense-invoice/controllers/expense-invoice.controller';
 import { ExpenseInvoiceModule } from 'src/modules/expense-invoice/expense-invoice.module';
 import { ExpensePaymentConditionController } from 'src/modules/expense-payment-condition/controllers/expense-payment-condition.controller';
@@ -82,11 +82,13 @@ import { UsersModule } from 'src/modules/user/user.module';
     TaxController,
     TaxWithholdingController,
     UserController,
-    ExpenseInvoiceController,
     ExpensQuotationController,
+    ExpenseInvoiceController,
     ExpensePaymentController,
     ExpensePaymentConditionController,
-    WebhookController
+    ArticleHistoryController
+
+
 
   ],
   providers: [],
@@ -116,11 +118,13 @@ import { UsersModule } from 'src/modules/user/user.module';
     TaxModule,
     TaxWithholdingModule,
     UsersModule,
-    ExpenseInvoiceModule,
     ExpenseQuotationModule,
+    ExpenseInvoiceModule,
     ExpensePaymentModule,
     ExpensePaymentConditionModule,
-    dialogflowModule
+    ArticleHistoryModule
+
+
 
   ],
 })
