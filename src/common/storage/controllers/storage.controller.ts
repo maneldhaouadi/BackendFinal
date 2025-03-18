@@ -1,5 +1,6 @@
 import {
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -90,6 +91,19 @@ export class StorageController {
     );
     fileStream.pipe(res);
   }
+
+
+  @Delete(':id')
+  async deleteFile(@Param('id') id: number): Promise<UploadEntity> {
+    try {
+      return await this.storageService.delete(id);
+    } catch (error) {
+      console.error('Failed to delete file:', error);
+      throw new Error('Failed to delete file');
+    }
+  }
+
+
 
   @Get('file/id/:id')
   async downloadFileById(

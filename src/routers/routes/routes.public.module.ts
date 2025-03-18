@@ -22,6 +22,8 @@ import { CurrencyController } from 'src/modules/currency/controllers/currency.co
 import { CurrencyModule } from 'src/modules/currency/currency.module';
 import { DefaultConditionController } from 'src/modules/default-condition/controllers/default-condition.controller';
 import { DefaultConditionModule } from 'src/modules/default-condition/default-condition.module';
+import { WebhookController } from 'src/modules/dialogflow-management/controllers/webhook.controller';
+import { dialogflowModule } from 'src/modules/dialogflow-management/dialogflow-management.module';
 import { ExpenseInvoiceController } from 'src/modules/expense-invoice/controllers/expense-invoice.controller';
 import { ExpenseInvoiceModule } from 'src/modules/expense-invoice/expense-invoice.module';
 import { ExpensePaymentConditionController } from 'src/modules/expense-payment-condition/controllers/expense-payment-condition.controller';
@@ -83,7 +85,8 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpenseInvoiceController,
     ExpensQuotationController,
     ExpensePaymentController,
-    ExpensePaymentConditionController
+    ExpensePaymentConditionController,
+    WebhookController
 
   ],
   providers: [],
@@ -116,7 +119,8 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpenseInvoiceModule,
     ExpenseQuotationModule,
     ExpensePaymentModule,
-    ExpensePaymentConditionModule
+    ExpensePaymentConditionModule,
+    dialogflowModule
 
   ],
 })
