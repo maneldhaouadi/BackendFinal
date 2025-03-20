@@ -93,7 +93,7 @@ export class ArticleController {
     return await this.articleService.save(createArticleDto);
   }
 
-  @Put('/:id')
+  @Put('/update/:id')
   @ApiParam({ name: 'id', type: 'number', required: true })
   async update(@Param('id') id: number, @Body() updateArticleDto: UpdateArticleDto): Promise<ResponseArticleDto> {
     return await this.articleService.update(id, updateArticleDto);
