@@ -94,9 +94,21 @@ export class ArticleController {
   }
 
   @Put('/update/:id')
-  @ApiParam({ name: 'id', type: 'number', required: true })
-  async update(@Param('id') id: number, @Body() updateArticleDto: UpdateArticleDto): Promise<ResponseArticleDto> {
-    return await this.articleService.update(id, updateArticleDto);
+  async update(
+    @Param('id') id: number,
+    @Body() updateArticleDto: UpdateArticleDto,
+  ): Promise<ResponseArticleDto> {
+    try {
+      console.log("Données reçues :", updateArticleDto); // Log des données reçues
+      const updatedArticle = await this.articleService.update(id, updateArticleDto);
+      if (!updatedArticle) {
+        throw new NotFoundException(`Article with ID ${id} not found.`);
+      }
+      return updatedArticle;
+    } catch (error) {
+      console.error("Erreur lors de la mise à jour de l'article :", error); // Log de l'erreur
+      throw new BadRequestException(error.message);
+    }
   }
 
   @Get('/article-details/:id')
