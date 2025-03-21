@@ -71,10 +71,27 @@ export class ExpenseInvoiceUploadService {
     invoiceId: number,
     uploadId: number,
   ): Promise<ExpenseInvoiceUploadEntity> {
-    return this.invoiceUploadRepository.save({
-      expenseInvoice: { id: invoiceId },
-      uploadId, // Assurez-vous d'ajouter le filePath ici
+    // Vérifier si le fichier est déjà associé à la facture
+    const existingUpload = await this.invoiceUploadRepository.findOne({
+      where: {
+        expenseInvoice: { id: invoiceId }, // Vérifier la relation avec la facture
+        uploadId,                          // Vérifier l'ID du fichier uploadé
+      },
     });
+  
+    if (existingUpload) {
+      console.log('Le fichier est déjà associé à la facture:', existingUpload);
+      return existingUpload; // Retourner l'entrée existante
+    }
+  
+    // Créer une nouvelle entrée
+    const newUpload = this.invoiceUploadRepository.create({
+      expenseInvoice: { id: invoiceId }, // Associer l'ID de la facture
+      uploadId,                          // Associer l'ID du fichier uploadé
+    });
+  
+    console.log('Ajout d\'un nouveau fichier avec l\'uploadId:', uploadId, 'et invoiceId:', invoiceId);
+    return this.invoiceUploadRepository.save(newUpload);
   }
   
 
