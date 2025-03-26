@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@faker-js/faker": "^8.4.1",
+    "@google-cloud/vision": "^5.1.0",
     "@nestjs-cls/transactional": "^2.4.2",
     "@nestjs-cls/transactional-adapter-typeorm": "^1.2.4",
     "@nestjs/common": "^10.0.0",
@@ -69,7 +70,6 @@
     "rxjs": "^7.8.1",
     "socket.io": "^4.7.5",
     "swagger-ui-express": "^5.0.1",
-    "tesseract.js": "^6.0.0",
     "typeorm": "^0.3.20",
     "ua-parser-js": "^1.0.38",
     "winston": "^3.13.0",
