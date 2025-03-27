@@ -43,6 +43,8 @@ import { InterlocutorModule } from 'src/modules/interlocutor/Interlocutor.module
 import { InterlocutorController } from 'src/modules/interlocutor/controllers/interlocutor.controller';
 import { InvoiceController } from 'src/modules/invoice/controllers/invoice.controller';
 import { InvoiceModule } from 'src/modules/invoice/invoice.module';
+import { OcrController } from 'src/modules/ocr/controllers/ocr.controller';
+import { OcrModule } from 'src/modules/ocr/ocr.module';
 import { PaymentConditionController } from 'src/modules/payment-condition/controllers/payment-condition.controller';
 import { PaymentConditionModule } from 'src/modules/payment-condition/payment-condition.module';
 import { PaymentController } from 'src/modules/payment/controllers/payment.controller';
