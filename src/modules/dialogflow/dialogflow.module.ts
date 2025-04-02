@@ -12,6 +12,8 @@ import { ExpenseArticleQuotationEntryRepository } from '../expense_quotation/rep
 import { CurrencyEntity } from '../currency/repositories/entities/currency.entity';
 import { ArticleEntity } from '../article/repositories/entities/article.entity';
 import { InterlocutorEntity } from '../interlocutor/repositories/entity/interlocutor.entity';
+import { UploadEntity } from 'src/common/storage/repositories/entities/upload.entity';
+import { StorageModule } from 'src/common/storage/storage.module'; // Import du StorageModule
 
 @Module({
   imports: [
@@ -21,9 +23,10 @@ import { InterlocutorEntity } from '../interlocutor/repositories/entity/interloc
       ArticleExpensQuotationEntryEntity,
       CurrencyEntity,
       ArticleEntity,
-      InterlocutorEntity
-      // Ajoutez ici d'autres entités si nécessaire
+      InterlocutorEntity,
+      UploadEntity
     ]),
+    StorageModule, // Import du StorageModule qui contient le StorageService
   ],
   controllers: [DialogflowController],
   providers: [

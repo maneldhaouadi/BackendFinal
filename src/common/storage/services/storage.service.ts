@@ -177,4 +177,16 @@ export class StorageService {
   async getTotal(): Promise<number> {
     return this.uploadRepository.getTotalCount();
   }
+  // Dans storage.service.ts
+async getFile(slug: string): Promise<Buffer> {
+  const upload = await this.findBySlug(slug);
+  const filePath = join(this.rootLocation, upload.relativePath);
+
+  try {
+    await fs.access(filePath, constants.F_OK);
+    return await fs.readFile(filePath);
+  } catch (error) {
+    throw new FileNotFoundException();
+  }
+}
 }

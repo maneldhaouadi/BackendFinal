@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as dialogflow from '@google-cloud/dialogflow';
 import * as fs from 'fs';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { ExpensQuotationEntity } from 'src/modules/expense_quotation/repositories/entities/expensquotation.entity';
 import { EXPENSQUOTATION_STATUS } from 'src/modules/expense_quotation/enums/expensquotation-status.enum';
 import { EXPENSE_INVOICE_STATUS } from 'src/modules/expense-invoice/enums/expense-invoice-status.enum';
@@ -12,7 +12,7 @@ import { CurrencyRepository } from 'src/modules/currency/repositories/repository
 import { ArticleRepository } from 'src/modules/article/repositories/repository/article.repository';
 import { InterlocutorRepository } from 'src/modules/interlocutor/repositories/repository/interlocutor.repository';
 import { ExpenseArticleQuotationEntryRepository } from 'src/modules/expense_quotation/repositories/repository/article-expensquotation-entry.repository';
-import { CreateExpensQuotationDto } from 'src/modules/expense_quotation/dtos/expensquotation.create.dto';
+import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
 
 @Injectable()
 export class DialogflowService {
@@ -28,7 +28,9 @@ export class DialogflowService {
     private readonly currencyRepository: CurrencyRepository,
     private readonly articleRepository: ArticleRepository,
     private readonly interlocutorRepository: InterlocutorRepository,
-    private readonly articleEntryRepository: ExpenseArticleQuotationEntryRepository
+    private readonly articleEntryRepository: ExpenseArticleQuotationEntryRepository,
+    private readonly dataSource: DataSource
+
   ) {
     const filePath = 'src/projetadopet-9d2f2-7bd0022ebee4.json';
     try {
@@ -65,7 +67,8 @@ export class DialogflowService {
         articleNotFound: "Article with ID {{id}} not found.",
         quotationCreated: "Quotation {{object}} created successfully.\n- Reference: {{number}}\n- Total: {{total}} €",
         reminderSent: "Payment reminder sent successfully",
-        reportGenerated: "Report generated successfully"
+        reportGenerated: "Report generated successfully",
+        creationError: "Error creating quotation"
       },
       fr: {
         quotation: 'devis',
@@ -83,7 +86,8 @@ export class DialogflowService {
         articleNotFound: "Article avec l'ID {{id}} introuvable.",
         quotationCreated: "Devis {{object}} créé avec succès.\n- Référence : {{number}}\n- Total : {{total}} €",
         reminderSent: "Rappel de paiement envoyé avec succès",
-        reportGenerated: "Rapport généré avec succès"
+        reportGenerated: "Rapport généré avec succès",
+        creationError: "Erreur lors de la création du devis"
       },
       es: {
         quotation: 'presupuesto',
@@ -101,28 +105,219 @@ export class DialogflowService {
         articleNotFound: "Artículo con ID {{id}} no encontrado.",
         quotationCreated: "Presupuesto {{object}} creado correctamente.\n- Referencia: {{number}}\n- Total: {{total}} €",
         reminderSent: "Recordatorio de pago enviado correctamente",
-        reportGenerated: "Informe generado correctamente"
+        reportGenerated: "Informe generado correctamente",
+        creationError: "Error al crear presupuesto"
       }
     };
     
     return translations[lang] || translations['en'];
   }
 
-  private extractDocumentNumber(text: string, type: 'invoice' | 'quotation'): string | null {
-    const patterns = {
-      invoice: [
-        /(?:factura|recibo)\s+([A-Za-z0-9-]+)/i,
-        /(?:la\s+)?factura\s+([A-Za-z0-9-]+)/i,
-        /(?:número|num|#)\s+([A-Za-z0-9-]+)/i
-      ],
-      quotation: [
-        /(?:presupuesto|devis|quotation)\s+([A-Za-z0-9-]+)/i,
-        /(?:el\s+)?presupuesto\s+([A-Za-z0-9-]+)/i,
-        /(?:número|num|#)\s+([A-Za-z0-9-]+)/i
-      ]
+  private validateQuotationNumberFormat(number: string): boolean {
+    // Format: QUO- suivi de 4 chiffres (QUO-1234)
+    return /^QUO-\d{4}$/i.test(number);
+  }
+  
+  public async detectIntent(
+    languageCode: string,
+    queryText: string,
+    sessionId: string,
+    parameters?: any
+  ): Promise<any> {
+    const lang = languageCode || 'fr';
+    const t = this.getTranslation(lang);
+    const sessionPath = this.sessionClient.projectAgentSessionPath(
+      this.PROJECT_ID,
+      sessionId
+    );
+  
+    // 1. D'abord vérifier les numéros de documents
+    const invoiceNumber = this.extractInvoiceNumber(queryText);
+    const quotationNumber = this.extractQuotationNumber(queryText);
+  
+    // 2. Traitement personnalisé pour les documents
+    if (invoiceNumber) {
+      return this.handleInvoiceStatus(invoiceNumber, lang, sessionId);
+    }
+  
+    if (quotationNumber) {
+      return this.handleQuotationStatus(quotationNumber, lang, sessionId);
+    }
+  
+    // 3. Ensuite vérifier la création de devis
+    if (/(créer|nouveau|faire)\s*(un\s+)?(devis|quotation)/i.test(queryText)) {
+      return {
+        fulfillmentText: "Veuillez fournir le numéro séquentiel du devis (format QUO-XXXX)",
+        outputContexts: [{
+          name: `${sessionPath}/contexts/quotation-creation`,
+          lifespanCount: 5,
+          parameters: {
+            quotationCreation: true,
+            step: 'sequential'
+          }
+        }],
+        intent: 'CreateQuotation'
+      };
+    }
+  
+    // 4. Fallback à Dialogflow
+    const request = {
+      session: sessionPath,
+      queryInput: {
+        text: {
+          text: queryText,
+          languageCode: lang
+        }
+      },
+      queryParams: {
+        contexts: parameters?.outputContexts || []
+      }
     };
-
-    for (const pattern of patterns[type]) {
+  
+    try {
+      const responses = await this.sessionClient.detectIntent(request);
+      const result = responses[0].queryResult;
+  
+      // Gérer la création de devis
+      if (result.intent?.displayName === 'CreateQuotation' && 
+          result.allRequiredParamsPresent) {
+        const params = result.parameters.fields;
+        
+        // Préparer les articles
+        const articles = [];
+        if (params.articleId) {
+          articles.push({
+            articleId: params.articleId.numberValue,
+            quantity: params.quantity?.numberValue || 1,
+            discount: params.discount?.numberValue,
+            discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE
+          });
+        }
+  
+        // Créer le devis
+        const creationResult = await this.createQuotation({
+          firmId: params.firmId?.numberValue || 1,
+          cabinetId: params.cabinetId?.numberValue || 1,
+          interlocutorId: params.InterlocutorId.numberValue,
+          currencyId: params.currencyId?.numberValue,
+          object: params.object?.stringValue,
+          sequentialNumbr: params.sequentialNumbr?.stringValue,
+          articles: articles,
+          status: this.mapStatusStringToEnum(params.status?.stringValue),
+          dueDate: params.duedate?.stringValue ? new Date(params.duedate.stringValue) : undefined,
+          date: params.date?.stringValue ? new Date(params.date.stringValue) : undefined
+        }, lang);
+  
+        return {
+          fulfillmentText: creationResult.message,
+          intent: result.intent.displayName,
+          parameters: result.parameters,
+          outputContexts: result.outputContexts,
+          allRequiredParamsPresent: true
+        };
+      }
+  
+      // Intercepter les réponses FAQ_Invoice et FAQ_Quotation
+      if (result.intent?.displayName === 'FAQ_Invoice' && 
+          result.parameters.fields.invoice_number?.stringValue) {
+        return this.handleInvoiceStatus(
+          result.parameters.fields.invoice_number.stringValue, 
+          lang, 
+          sessionId
+        );
+      }
+  
+      if (result.intent?.displayName === 'FAQ_Quotation' && 
+          result.parameters.fields.quotation_number?.stringValue) {
+        return this.handleQuotationStatus(
+          result.parameters.fields.quotation_number.stringValue, 
+          lang, 
+          sessionId
+        );
+      }
+  
+      return {
+        fulfillmentText: result.fulfillmentText,
+        intent: result.intent?.displayName,
+        parameters: result.parameters,
+        outputContexts: result.outputContexts,
+        allRequiredParamsPresent: result.allRequiredParamsPresent
+      };
+    } catch (error) {
+      console.error('Dialogflow error:', error);
+      return {
+        fulfillmentText: t.error,
+        outputContexts: []
+      };
+    }
+  }
+  
+  // Ajoutez cette méthode pour convertir le statut string en enum
+  private mapStatusStringToEnum(statusString?: string): EXPENSQUOTATION_STATUS {
+    if (!statusString) return EXPENSQUOTATION_STATUS.Draft;
+    
+    const statusMap = {
+      'expense_quotation.status.draft': EXPENSQUOTATION_STATUS.Draft,
+      'expense_quotation.status.validated': EXPENSQUOTATION_STATUS.Validated,
+      'expense_quotation.status.expired': EXPENSQUOTATION_STATUS.Expired
+    };
+  
+    return statusMap[statusString] || EXPENSQUOTATION_STATUS.Draft;
+  }
+  private async handleQuotationStatus(
+    quotationNumber: string,
+    lang: string,
+    sessionId: string
+  ): Promise<any> {
+    const t = this.getTranslation(lang);
+    
+    try {
+      const quotationStatus = await this.getQuotationStatus(quotationNumber);
+      
+      if (!quotationStatus) {
+        return {
+          fulfillmentText: t.notFound(t.quotation, quotationNumber),
+          outputContexts: []
+        };
+      }
+  
+      const statusMessage = this.getQuotationStatusMessage(quotationStatus.status, lang);
+      const amount = this.formatCurrency(quotationStatus.details?.amount || 0, lang);
+      const date = this.formatDate(quotationStatus.details?.date?.toISOString(), lang);
+  
+      return {
+        fulfillmentText: lang === 'fr' 
+          ? `Statut du devis ${quotationNumber}: ${statusMessage}\nMontant total: ${amount}\nDate de création: ${date}`
+          : `Status of quotation ${quotationNumber}: ${statusMessage}\nTotal amount: ${amount}\nCreation date: ${date}`,
+        outputContexts: [{
+          name: `projects/${this.PROJECT_ID}/agent/sessions/${sessionId}/contexts/quotation-status`,
+          lifespanCount: 5,
+          parameters: {
+            quotationNumber,
+            status: quotationStatus.status,
+            amount: quotationStatus.details?.amount,
+            date: quotationStatus.details?.date
+          }
+        }]
+      };
+    } catch (error) {
+      console.error('Error handling quotation status:', error);
+      return {
+        fulfillmentText: t.error,
+        outputContexts: []
+      };
+    }
+  }
+  
+  private extractQuotationNumber(text: string): string | null {
+    const patterns = [
+      /(?:quotation|devis|presupuesto)\s+(QUO-\d{4})/i,
+      /(?:numero|num|#)\s+(QUO-\d{4})/i,
+      /(?:status|statut|estado)\s+(?:of|pour|de)\s+(QUO-\d{4})/i,
+      /^(QUO-\d{4})$/i
+    ];
+  
+    for (const pattern of patterns) {
       const match = text.match(pattern);
       if (match && match[1]) {
         return match[1].toUpperCase();
@@ -131,228 +326,98 @@ export class DialogflowService {
     return null;
   }
 
-  private extractBracketParams(text: string): Record<string, string> {
-    const params: Record<string, string> = {};
-    const regex = /\[([^:]+):([^\]]+)\]/g;
-    let match;
-
-    while ((match = regex.exec(text)) !== null) {
-      params[match[1].trim()] = match[2].trim();
+  private parseArticlesInput(input: string): Array<{
+    articleId: number;
+    quantity: number;
+    discount?: number;
+    discount_type?: DISCOUNT_TYPES;
+  }> {
+    try {
+      // Expected format: [id:1,quantity:2,discount:10], [id:3,quantity:1]
+      const articles = input.split('], [').map(item => 
+        item.replace(/[\[\]]/g, '').split(',')
+      );
+      
+      return articles.map(articleParts => {
+        const articleData: any = {};
+        articleParts.forEach(part => {
+          const [key, value] = part.split(':');
+          articleData[key] = value;
+        });
+        
+        return {
+          articleId: parseInt(articleData.id),
+          quantity: parseInt(articleData.quantity),
+          discount: articleData.discount ? parseFloat(articleData.discount) : undefined,
+          discount_type: articleData.discount_type as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE
+        };
+      });
+    } catch (error) {
+      throw new Error("Format d'articles invalide. Utilisez [id:XX,quantity:XX,discount:XX]");
     }
-
-    return params;
   }
 
+  private extractInvoiceNumber(text: string): string | null {
+    const patterns = [
+      /(?:invoice|facture)\s+(INV-\d+)/i,
+      /(?:numero|num|#)\s+(INV-\d+)/i,
+      /(?:status|statut)\s+(?:of|pour)?\s*(?:invoice|facture)?\s*(?:no|num|number)?\s*[:#]?\s*(INV-\d+)/i,
+      /^(INV-\d+)$/i
+    ];
   
-  
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        return match[1].toUpperCase();
+      }
+    }
+    return null;
+  }
 
-  public async detectIntent(
-    languageCode: string,
-    queryText: string,
-    sessionId: string,
+  private async handleInvoiceStatus(
+    invoiceNumber: string,
+    lang: string,
+    sessionId: string
   ): Promise<any> {
-    const lang = languageCode || 'en';
     const t = this.getTranslation(lang);
     
-
-    const sessionPath = this.sessionClient.projectAgentSessionPath(
-      this.PROJECT_ID,
-      sessionId,
-    );
-
-    const request = {
-      session: sessionPath,
-      queryInput: {
-        text: {
-          text: queryText,
-          languageCode: lang,
-        },
-      },
-    };
-
     try {
-      const responses = await this.sessionClient.detectIntent(request);
-      const result = responses[0].queryResult;
-
-      if (lang === 'es') {
-        const invoiceNumber = this.extractDocumentNumber(queryText, 'invoice');
-        const quotationNumber = this.extractDocumentNumber(queryText, 'quotation');
-
-        if (invoiceNumber) {
-          return this.processInvoiceRequest(invoiceNumber, lang, sessionPath);
-        }
-
-        if (quotationNumber) {
-          return this.processQuotationRequest(quotationNumber, lang, sessionPath);
-        }
-      }
-
-      if (result.intent?.displayName.includes('Quotation') || 
-          result.intent?.displayName.includes('Invoice')) {
-        return this.handleDocumentRequest(result, lang, sessionPath);
-      }
-
-      if (result.intent?.displayName === 'Default Fallback Intent') {
+      const invoiceStatus = await this.getInvoiceStatus(invoiceNumber);
+      
+      if (!invoiceStatus) {
         return {
-          fulfillmentText: t.fallback,
-          isFallback: true
+          fulfillmentText: t.notFound(t.invoice, invoiceNumber),
+          outputContexts: []
         };
       }
-
+  
+      const statusMessage = this.getInvoiceStatusMessage(invoiceStatus.status, lang);
+      const amount = this.formatCurrency(invoiceStatus.details?.amount || 0, lang);
+      const paidAmount = this.formatCurrency(invoiceStatus.details?.paidAmount || 0, lang);
+      const dueDate = this.formatDate(invoiceStatus.details?.dueDate, lang);
+  
       return {
-        fulfillmentText: result.fulfillmentText,
-        intent: result.intent?.displayName,
-        parameters: result.parameters,
-        allRequiredParamsPresent: result.allRequiredParamsPresent
-      };
-    } catch (error) {
-      console.error('Error in detectIntent:', error);
-      return {
-        fulfillmentText: t.error,
-        diagnosticInfo: {
-          error: error.message,
-          stack: error.stack,
-          timestamp: new Date().toISOString()
-        }
-      };
-    }
-  }
-
-  private async processInvoiceRequest(invoiceNumber: string, lang: string, sessionPath: string) {
-    const t = this.getTranslation(lang);
-    const cleanedNumber = invoiceNumber.trim().toUpperCase();
-    
-    try {
-      const invoiceStatus = await this.getInvoiceStatus(cleanedNumber);
-      
-      if (invoiceStatus) {
-        const statusMessage = this.getInvoiceStatusMessage(invoiceStatus.status, lang);
-        return {
-          fulfillmentText: t.statusResponse(t.invoice, cleanedNumber, statusMessage),
-          fulfillmentMessages: [
-            {
-              text: {
-                text: [
-                  `${t.invoice.toUpperCase()} ${cleanedNumber}`,
-                  `${lang === 'es' ? 'Estado' : lang === 'fr' ? 'Statut' : 'Status'}: ${statusMessage}`,
-                  `${lang === 'es' ? 'Monto total' : lang === 'fr' ? 'Montant total' : 'Total amount'}: ${this.formatCurrency(invoiceStatus.details?.amount, lang)}`,
-                  `${lang === 'es' ? 'Monto pagado' : lang === 'fr' ? 'Montant payé' : 'Paid amount'}: ${this.formatCurrency(invoiceStatus.details?.paidAmount, lang)}`,
-                  `${lang === 'es' ? 'Fecha vencimiento' : lang === 'fr' ? 'Date d\'échéance' : 'Due date'}: ${this.formatDate(invoiceStatus.details?.dueDate, lang)}`
-                ]
-              }
-            }
-          ],
-          payload: {
-            type: 'invoice',
-            number: cleanedNumber,
+        fulfillmentText: lang === 'fr' 
+          ? `Statut de la facture ${invoiceNumber}: ${statusMessage}\nMontant: ${amount}\nMontant payé: ${paidAmount}\nDate d'échéance: ${dueDate}`
+          : `Status of invoice ${invoiceNumber}: ${statusMessage}\nAmount: ${amount}\nPaid amount: ${paidAmount}\nDue date: ${dueDate}`,
+        outputContexts: [{
+          name: `projects/${this.PROJECT_ID}/agent/sessions/${sessionId}/contexts/invoice-status`,
+          lifespanCount: 5,
+          parameters: {
+            invoiceNumber,
             status: invoiceStatus.status,
-            statusMessage,
-            details: invoiceStatus.details,
-            timestamp: new Date().toISOString()
+            amount: invoiceStatus.details?.amount,
+            paidAmount: invoiceStatus.details?.paidAmount,
+            dueDate: invoiceStatus.details?.dueDate
           }
-        };
-      } else {
-        return {
-          fulfillmentText: t.notFound(t.invoice, cleanedNumber),
-          outputContexts: [{
-            name: `${sessionPath}/contexts/document-not-found`,
-            lifespanCount: 2,
-            parameters: { 
-              documentType: 'invoice',
-              number: cleanedNumber 
-            }
-          }]
-        };
-      }
+        }]
+      };
     } catch (error) {
-      console.error('Error processing invoice:', error);
+      console.error('Error handling invoice status:', error);
       return {
         fulfillmentText: t.error,
-        outputContexts: [{
-          name: `${sessionPath}/contexts/error`,
-          lifespanCount: 1
-        }]
+        outputContexts: []
       };
-    }
-  }
-
-  private async processQuotationRequest(quotationNumber: string, lang: string, sessionPath: string) {
-    const t = this.getTranslation(lang);
-    const cleanedNumber = quotationNumber.trim().toUpperCase();
-    
-    try {
-      const quotationStatus = await this.getQuotationStatus(cleanedNumber);
-      
-      if (quotationStatus) {
-        const statusMessage = this.getQuotationStatusMessage(quotationStatus.status, lang);
-        return {
-          fulfillmentText: t.statusResponse(t.quotation, cleanedNumber, statusMessage),
-          fulfillmentMessages: [
-            {
-              text: {
-                text: [
-                  `${t.quotation.toUpperCase()} ${cleanedNumber}`,
-                  `${lang === 'es' ? 'Estado' : lang === 'fr' ? 'Statut' : 'Status'}: ${statusMessage}`,
-                  `${lang === 'es' ? 'Monto' : lang === 'fr' ? 'Montant' : 'Amount'}: ${this.formatCurrency(quotationStatus.details?.amount, lang)}`,
-                ]
-              }
-            }
-          ],
-          payload: {
-            type: 'quotation',
-            number: cleanedNumber,
-            status: quotationStatus.status,
-            statusMessage,
-            details: quotationStatus.details,
-            timestamp: new Date().toISOString()
-          }
-        };
-      } else {
-        return {
-          fulfillmentText: t.notFound(t.quotation, cleanedNumber),
-          outputContexts: [{
-            name: `${sessionPath}/contexts/document-not-found`,
-            lifespanCount: 2,
-            parameters: { 
-              documentType: 'quotation',
-              number: cleanedNumber 
-            }
-          }]
-        };
-      }
-    } catch (error) {
-      console.error('Error processing quotation:', error);
-      return {
-        fulfillmentText: t.error,
-        outputContexts: [{
-          name: `${sessionPath}/contexts/error`,
-          lifespanCount: 1
-        }]
-      };
-    }
-  }
-
-  private async handleDocumentRequest(result: any, lang: string, sessionPath: string) {
-    const t = this.getTranslation(lang);
-    const isInvoice = result.intent.displayName.includes('Invoice');
-    const paramName = isInvoice ? 'invoice_number' : 'quotation_number';
-    const number = result.parameters.fields[paramName]?.stringValue;
-
-    if (!number) {
-      return {
-        fulfillmentText: t.missingNumber(isInvoice ? 'invoice' : 'quotation'),
-        outputContexts: [{
-          name: `${sessionPath}/contexts/missing-number`,
-          lifespanCount: 1,
-          parameters: { documentType: isInvoice ? 'invoice' : 'quotation' }
-        }]
-      };
-    }
-
-    if (isInvoice) {
-      return this.processInvoiceRequest(number, lang, sessionPath);
-    } else {
-      return this.processQuotationRequest(number, lang, sessionPath);
     }
   }
 
@@ -362,52 +427,62 @@ export class DialogflowService {
     details?: {
       amount?: number;
       date?: Date;
+      articleCount?: number;
     }
   } | null> {
     try {
-      const quotation = await this.expensQuotationRepository.findOne({
-        where: { sequentialNumbr: sequentialNumber }
-      });
+        const quotation = await this.expensQuotationRepository
+            .createQueryBuilder('quotation')
+            .leftJoinAndSelect('quotation.expensearticleQuotationEntries', 'articles')
+            .where('quotation.sequentialNumbr = :number', { number: sequentialNumber })
+            .getOne();
 
-      if (!quotation) return null;
-
-      return {
-        quotationNumber: quotation.sequentialNumbr,
-        status: quotation.status,
-        details: {
-          amount: quotation.total,
-          date: quotation.date
+        if (!quotation) {
+            return null;
         }
-      };
+
+        return {
+            quotationNumber: quotation.sequentialNumbr,
+            status: quotation.status,
+            details: {
+                amount: quotation.total,
+                date: quotation.date,
+                articleCount: quotation.expensearticleQuotationEntries?.length || 0
+            }
+        };
     } catch (error) {
-      console.error('Database error (quotation):', error);
-      throw error;
+        console.error('Database error (quotation):', error);
+        throw new Error(this.getTranslation('en').error);
     }
   }
 
   public getQuotationStatusMessage(status: EXPENSQUOTATION_STATUS, lang: string = 'en'): string {
-    const statusMap = {
-      en: {
-        [EXPENSQUOTATION_STATUS.Nonexistent]: 'Non Existent',
-        [EXPENSQUOTATION_STATUS.Expired]: 'Expired',
-        [EXPENSQUOTATION_STATUS.Draft]: 'Draft',
-        [EXPENSQUOTATION_STATUS.Validated]: 'Validated'
-      },
-      fr: {
-        [EXPENSQUOTATION_STATUS.Nonexistent]: 'Inexistant',
-        [EXPENSQUOTATION_STATUS.Expired]: 'Expiré',
-        [EXPENSQUOTATION_STATUS.Draft]: 'Brouillon',
-        [EXPENSQUOTATION_STATUS.Validated]: 'Validé'
-      },
-      es: {
-        [EXPENSQUOTATION_STATUS.Nonexistent]: 'Inexistente',
-        [EXPENSQUOTATION_STATUS.Expired]: 'Expirado',
-        [EXPENSQUOTATION_STATUS.Draft]: 'Borrador',
-        [EXPENSQUOTATION_STATUS.Validated]: 'Validado'
-      }
+    const translations = {
+        en: {
+            [EXPENSQUOTATION_STATUS.Nonexistent]: 'Non Existent',
+            [EXPENSQUOTATION_STATUS.Expired]: 'Expired',
+            [EXPENSQUOTATION_STATUS.Draft]: 'Draft',
+            [EXPENSQUOTATION_STATUS.Validated]: 'Validated',
+            unknown: 'Unknown Status'
+        },
+        fr: {
+            [EXPENSQUOTATION_STATUS.Nonexistent]: 'Inexistant',
+            [EXPENSQUOTATION_STATUS.Expired]: 'Expiré',
+            [EXPENSQUOTATION_STATUS.Draft]: 'Brouillon',
+            [EXPENSQUOTATION_STATUS.Validated]: 'Validé',
+            unknown: 'Statut inconnu'
+        },
+        es: {
+            [EXPENSQUOTATION_STATUS.Nonexistent]: 'Inexistente',
+            [EXPENSQUOTATION_STATUS.Expired]: 'Expirado',
+            [EXPENSQUOTATION_STATUS.Draft]: 'Borrador',
+            [EXPENSQUOTATION_STATUS.Validated]: 'Validado',
+            unknown: 'Estado desconocido'
+        }
     };
     
-    return statusMap[lang]?.[status] || statusMap['en'][status] || 'Unknown Status';
+    const langMap = translations[lang] || translations.en;
+    return langMap[status] || langMap.unknown;
   }
 
   public async getInvoiceStatus(invoiceNumber: string): Promise<{ 
@@ -497,136 +572,201 @@ export class DialogflowService {
     });
   }
 
-  private startQuotationCreation(sessionId: string, lang: string) {
-    const t = this.getTranslation(lang);
-    return {
-      fulfillmentText: t.startCreation,
-      outputContexts: [{
-        name: `projects/${this.PROJECT_ID}/agent/sessions/${sessionId}/contexts/quotation-creation`,
-        lifespanCount: 5,
-        parameters: {
-          fields: {
-            currentStep: { stringValue: 'firmId' },
-            collectedData: { structValue: {} }
-          }
-        }
-      }]
-    };
-  }
-  
-  
   public async createQuotation(
     params: {
       firmId: number;
-      cabinetId: number;
+      cabinetId?: number; // Maintenant optionnel
       interlocutorId: number;
       currencyId?: number;
       object?: string;
+      sequentialNumbr?: string;
       articles: Array<{
         articleId: number;
         quantity: number;
+        unit_price?: number;
         discount?: number;
-        discount_type?: 'PERCENTAGE' | 'AMOUNT';
+        discount_type?: DISCOUNT_TYPES;
       }>;
       bankAccountId?: number;
       pdfFileId?: number;
       generalConditions?: string;
+      status?: EXPENSQUOTATION_STATUS;
+      dueDate?: Date;
+      notes?: string;
+      date?: Date;
+      discount?: number;
+      discount_type?: DISCOUNT_TYPES;
+      taxStamp?: number;
+      expenseMetaDataId?: number;
+      isDeletionRestricted?: boolean;
     },
     lang: string = 'fr'
   ) {
     const t = this.getTranslation(lang);
+    const queryRunner = this.dataSource.createQueryRunner();
+    
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
   
-    // Valider l'interlocutor
-    const interlocutor = await this.interlocutorRepository.findOne({ 
-      where: { id: params.interlocutorId } 
-    });
-    if (!interlocutor) {
-      throw new Error(t.interlocutorNotFound);
-    }
-  
-    // Récupérer les articles
-    const articleEntries = [];
-    let subTotal = 0;
-  
-    for (const item of params.articles) {
-      const article = await this.articleRepository.findOne({ 
-        where: { id: item.articleId } 
-      });
-      if (!article) {
-        throw new Error(t.articleNotFound.replace('{{id}}', item.articleId.toString()));
-      }
-  
-      // Calculer le total pour chaque article
-      const unitPrice = article.salePrice;
-      let discountAmount = 0;
-      
-      if (item.discount) {
-        discountAmount = item.discount_type === 'AMOUNT' 
-          ? item.discount 
-          : (unitPrice * item.quantity * item.discount / 100);
-      }
-  
-      const total = (unitPrice * item.quantity) - discountAmount;
-  
-      articleEntries.push({
-        article,
-        quantity: item.quantity,
-        unit_price: unitPrice,
-        discount: item.discount || 0,
-        discount_type: item.discount_type || 'PERCENTAGE',
-        total
-      });
-  
-      subTotal += total;
-    }
-  
-    // Créer le DTO complet
-    const quotationDto: CreateExpensQuotationDto = {
-      firmId: params.firmId,
-      interlocutorId: params.interlocutorId,
-      currencyId: params.currencyId || 1, // Devise par défaut
-      object: params.object || 'Nouveau devis',
-      status:EXPENSQUOTATION_STATUS.Draft,
-      articleQuotationEntries: articleEntries,
-      generalConditions: params.generalConditions,
-      bankAccountId: params.bankAccountId,
-      pdfFileId: params.pdfFileId,
-       // À ajuster avec les taxes si nécessaire
-      sequentialNumbr: `QUO-${new Date().getFullYear()}-${(await this.getNextQuotationNumber()).toString().padStart(4, '0')}`,
-      date: new Date(),
-      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // +30 jours
-    };
-  
-    // Utiliser la méthode save existante
     try {
-      const quotation = await this.expensQuotationRepository.save(quotationDto);
+      // Validation des champs obligatoires
+      if (!params.interlocutorId || !params.articles || params.articles.length === 0) {
+        throw new Error(t.missingRequiredFields);
+      }
+  
+      // Vérification de l'interlocuteur
+      const interlocutor = await this.interlocutorRepository.findOne({
+        where: { id: params.interlocutorId }
+      });
       
+      if (!interlocutor) {
+        throw new Error(t.interlocutorNotFound);
+      }
+  
+      // Vérification du cabinet (si fourni)
+     
+  
+      // Traitement des articles
+      const articleEntries: ArticleExpensQuotationEntryEntity[] = [];
+      let subTotal = 0;
+  
+      for (const item of params.articles) {
+        const article = await this.articleRepository.findOne({
+          where: { id: item.articleId }
+        });
+        
+        if (!article) {
+          throw new Error(t.articleNotFound.replace('{{id}}', item.articleId.toString()));
+        }
+  
+        const unitPrice = item.unit_price ?? article.salePrice;
+        const discountAmount = item.discount 
+          ? (item.discount_type === DISCOUNT_TYPES.AMOUNT 
+              ? item.discount 
+              : (unitPrice * item.quantity * item.discount / 100))
+          : 0;
+  
+        const articleSubTotal = unitPrice * item.quantity;
+        const articleTotal = articleSubTotal - discountAmount;
+  
+        const articleEntry = new ArticleExpensQuotationEntryEntity();
+        articleEntry.article = article;
+        articleEntry.quantity = item.quantity;
+        articleEntry.unit_price = unitPrice;
+        articleEntry.discount = item.discount || 0;
+        articleEntry.discount_type = item.discount_type || DISCOUNT_TYPES.PERCENTAGE;
+        articleEntry.subTotal = articleSubTotal;
+        articleEntry.total = articleTotal;
+  
+        articleEntries.push(articleEntry);
+        subTotal += articleTotal;
+      }
+  
+      // Calcul du total
+      let total = subTotal;
+  
+      if (params.discount) {
+        total = params.discount_type === DISCOUNT_TYPES.AMOUNT
+          ? total - params.discount
+          : total * (1 - (params.discount / 100));
+      }
+  
+      if (params.taxStamp) {
+        total += params.taxStamp;
+      }
+  
+      // Génération du numéro séquentiel si non fourni
+      const sequentialNumbr = params.sequentialNumbr 
+        ?? `QUO-${new Date().getFullYear()}-${(await this.getNextQuotationNumber()).toString().padStart(4, '0')}`;
+  
+      // Création du devis
+      const quotation = new ExpensQuotationEntity();
+      quotation.firmId = params.firmId;
+      quotation.cabinetId = params.cabinetId ?? 1; // Valeur par défaut 1 si non fourni
+      quotation.interlocutor = interlocutor;
+      quotation.currencyId = params.currencyId ?? 1;
+      quotation.object = params.object ?? `Devis ${new Date().toLocaleDateString()}`;
+      quotation.status = params.status ?? EXPENSQUOTATION_STATUS.Draft;
+      quotation.generalConditions = params.generalConditions ?? '';
+      quotation.bankAccountId = params.bankAccountId ?? null;
+      quotation.pdfFileId = params.pdfFileId ?? null;
+      quotation.sequentialNumbr = sequentialNumbr;
+      quotation.sequential = sequentialNumbr;
+      quotation.date = params.date ?? new Date();
+      quotation.dueDate = params.dueDate ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      quotation.subTotal = subTotal;
+      quotation.total = total;
+      quotation.notes = params.notes ?? '';
+      quotation.discount = params.discount ?? 0;
+      quotation.discount_type = params.discount_type ?? DISCOUNT_TYPES.PERCENTAGE;
+      quotation.taxStamp = params.taxStamp ?? 0;
+      quotation.expenseMetaDataId = params.expenseMetaDataId ?? null;
+      quotation.isDeletionRestricted = params.isDeletionRestricted ?? false;
+  
+      // Sauvegarde transactionnelle
+      const savedQuotation = await queryRunner.manager.save(quotation);
+      
+      // Sauvegarde des articles
+      for (const entry of articleEntries) {
+        entry.expenseQuotation = savedQuotation;
+        await queryRunner.manager.save(entry);
+      }
+  
+      await queryRunner.commitTransaction();
+  
       return {
         success: true,
-        quotationNumber: quotation.sequentialNumbr,
-        total: quotation.total,
+        quotationNumber: savedQuotation.sequentialNumbr,
+        total: savedQuotation.total,
+        subTotal: savedQuotation.subTotal,
         message: t.quotationCreated
-          .replace('{{object}}', quotation.object || '')
-          .replace('{{number}}', quotation.sequentialNumbr)
-          .replace('{{total}}', quotation.total.toFixed(2))
+          .replace('{{object}}', savedQuotation.object)
+          .replace('{{number}}', savedQuotation.sequentialNumbr)
+          .replace('{{total}}', savedQuotation.total.toFixed(2)),
+        details: {
+          quotationId: savedQuotation.id,
+          date: savedQuotation.date,
+          dueDate: savedQuotation.dueDate,
+          articleCount: articleEntries.length,
+          cabinetId: savedQuotation.cabinetId // Retourne l'ID du cabinet utilisé
+        }
       };
+  
     } catch (error) {
-      console.error('Error saving quotation:', error);
-      throw new Error(t.creationError);
+      await queryRunner.rollbackTransaction();
+      throw new Error(`${t.creationError}: ${error.message}`);
+    } finally {
+      await queryRunner.release();
     }
   }
   
   private async getNextQuotationNumber(): Promise<number> {
-    const lastQuote = await this.expensQuotationRepository.findOne({
-      order: { createdAt: 'DESC' },
-      select: ['sequentialNumbr']
-    });
+    const lastQuote = await this.expensQuotationRepository
+      .createQueryBuilder('quotation')
+      .where('quotation.sequentialNumbr LIKE :pattern', { pattern: 'QUO-%' })
+      .orderBy('quotation.createdAt', 'DESC')
+      .getOne();
   
     if (!lastQuote || !lastQuote.sequentialNumbr) {
       return 1;
     }
   
-    const matches = lastQuote.sequentialNumbr.match(/QUO-\d{4}-(\d+)/);
-    return matches ? parseInt(matches[1]) + 1 : 1;
+    const matches = lastQuote.sequentialNumbr.match(/QUO-(\d{4})-(\d+)/);
+    
+    if (matches && matches[2]) {
+      return parseInt(matches[2], 10) + 1;
+    }
+    
+    return 1;
+  }
+  public async getArticleInfo(articleId: number, lang: string = 'fr') {
+    try {
+      return await this.articleRepository.findOne({
+        where: { id: articleId },
+        select: ['id', 'title', 'salePrice'] // Sélectionnez les champs nécessaires
+      });
+    } catch (error) {
+      return null;
+    }
   }
 }
