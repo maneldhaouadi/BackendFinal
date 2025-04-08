@@ -13,6 +13,8 @@ import { ArticleRepository } from 'src/modules/article/repositories/repository/a
 import { InterlocutorRepository } from 'src/modules/interlocutor/repositories/repository/interlocutor.repository';
 import { ExpenseArticleQuotationEntryRepository } from 'src/modules/expense_quotation/repositories/repository/article-expensquotation-entry.repository';
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
+import { FirmRepository } from 'src/modules/firm/repositories/repository/firm.repository';
+
 
 @Injectable()
 export class DialogflowService {
@@ -29,7 +31,8 @@ export class DialogflowService {
     private readonly articleRepository: ArticleRepository,
     private readonly interlocutorRepository: InterlocutorRepository,
     private readonly articleEntryRepository: ExpenseArticleQuotationEntryRepository,
-    private readonly dataSource: DataSource
+    private readonly dataSource: DataSource,
+    private readonly firmRepository:FirmRepository,
 
   ) {
     const filePath = 'src/projetadopet-9d2f2-7bd0022ebee4.json';
@@ -113,157 +116,300 @@ export class DialogflowService {
     return translations[lang] || translations['en'];
   }
 
-  private validateQuotationNumberFormat(number: string): boolean {
-    // Format: QUO- suivi de 4 chiffres (QUO-1234)
-    return /^QUO-\d{4}$/i.test(number);
+  
+ public async detectIntent(
+  languageCode: string,
+  queryText: string,
+  sessionId: string,
+  parameters?: any
+): Promise<any> {
+  const lang = languageCode || 'fr';
+  const t = this.getTranslation(lang);
+  const sessionPath = this.sessionClient.projectAgentSessionPath(
+    this.PROJECT_ID,
+    sessionId
+  );
+
+  // 1. D'abord vérifier les numéros de documents
+  const invoiceNumber = this.extractInvoiceNumber(queryText);
+  const quotationNumber = this.extractQuotationNumber(queryText);
+
+  // 2. Traitement personnalisé pour les documents
+  if (invoiceNumber) {
+    return this.handleInvoiceStatus(invoiceNumber, lang, sessionId);
   }
-  
-  public async detectIntent(
-    languageCode: string,
-    queryText: string,
-    sessionId: string,
-    parameters?: any
-  ): Promise<any> {
-    const lang = languageCode || 'fr';
-    const t = this.getTranslation(lang);
-    const sessionPath = this.sessionClient.projectAgentSessionPath(
-      this.PROJECT_ID,
-      sessionId
-    );
-  
-    // 1. D'abord vérifier les numéros de documents
-    const invoiceNumber = this.extractInvoiceNumber(queryText);
-    const quotationNumber = this.extractQuotationNumber(queryText);
-  
-    // 2. Traitement personnalisé pour les documents
-    if (invoiceNumber) {
-      return this.handleInvoiceStatus(invoiceNumber, lang, sessionId);
+
+  if (quotationNumber) {
+    return this.handleQuotationStatus(quotationNumber, lang, sessionId);
+  }
+
+  // 3. Fallback à Dialogflow
+  const request = {
+    session: sessionPath,
+    queryInput: {
+      text: {
+        text: queryText,
+        languageCode: lang
+      }
+    },
+    queryParams: {
+      contexts: parameters?.outputContexts || []
     }
-  
-    if (quotationNumber) {
-      return this.handleQuotationStatus(quotationNumber, lang, sessionId);
-    }
-  
-    // 3. Ensuite vérifier la création de devis
-    if (/(créer|nouveau|faire)\s*(un\s+)?(devis|quotation)/i.test(queryText)) {
+  };
+
+  try {
+    const responses = await this.sessionClient.detectIntent(request);
+    const result = responses[0].queryResult;
+
+    // MODIFICATION IMPORTANTE: Traiter d'abord AddQuotationArticle
+    if (result.intent?.displayName === 'AddQuotationArticle' && 
+      result.allRequiredParamsPresent) {
+      const params = result.parameters.fields;
+      
+      
+      const discountType = params.discountType?.stringValue?.toUpperCase() === 'AMMOUNT' 
+        ? DISCOUNT_TYPES.AMOUNT 
+        : DISCOUNT_TYPES.PERCENTAGE;
+
+      const addResult = await this.addArticleToQuotation({
+        quotationNumber: params.quotationNumber?.stringValue,
+        articleId: params.articleId.numberValue,
+        quantity: params.quantity.numberValue,
+        discount: params.discount?.numberValue || 0,
+        discount_type: discountType,
+        unit_price: params.unitPrice?.numberValue
+      }, lang);
+
       return {
-        fulfillmentText: "Veuillez fournir le numéro séquentiel du devis (format QUO-XXXX)",
-        outputContexts: [{
-          name: `${sessionPath}/contexts/quotation-creation`,
-          lifespanCount: 5,
-          parameters: {
-            quotationCreation: true,
-            step: 'sequential'
-          }
-        }],
-        intent: 'CreateQuotation'
-      };
-    }
-  
-    // 4. Fallback à Dialogflow
-    const request = {
-      session: sessionPath,
-      queryInput: {
-        text: {
-          text: queryText,
-          languageCode: lang
-        }
-      },
-      queryParams: {
-        contexts: parameters?.outputContexts || []
-      }
-    };
-  
-    try {
-      const responses = await this.sessionClient.detectIntent(request);
-      const result = responses[0].queryResult;
-  
-      // Gérer la création de devis
-      if (result.intent?.displayName === 'CreateQuotation' && 
-          result.allRequiredParamsPresent) {
-        const params = result.parameters.fields;
-        
-        // Préparer les articles
-        const articles = [];
-        if (params.articleId) {
-          articles.push({
-            articleId: params.articleId.numberValue,
-            quantity: params.quantity?.numberValue || 1,
-            discount: params.discount?.numberValue,
-            discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE
-          });
-        }
-  
-        // Créer le devis
-        const creationResult = await this.createQuotation({
-          firmId: params.firmId?.numberValue || 1,
-          cabinetId: params.cabinetId?.numberValue || 1,
-          interlocutorId: params.InterlocutorId.numberValue,
-          currencyId: params.currencyId?.numberValue,
-          object: params.object?.stringValue,
-          sequentialNumbr: params.sequentialNumbr?.stringValue,
-          articles: articles,
-          status: this.mapStatusStringToEnum(params.status?.stringValue),
-          dueDate: params.duedate?.stringValue ? new Date(params.duedate.stringValue) : undefined,
-          date: params.date?.stringValue ? new Date(params.date.stringValue) : undefined
-        }, lang);
-  
-        return {
-          fulfillmentText: creationResult.message,
-          intent: result.intent.displayName,
-          parameters: result.parameters,
-          outputContexts: result.outputContexts,
-          allRequiredParamsPresent: true
-        };
-      }
-  
-      // Intercepter les réponses FAQ_Invoice et FAQ_Quotation
-      if (result.intent?.displayName === 'FAQ_Invoice' && 
-          result.parameters.fields.invoice_number?.stringValue) {
-        return this.handleInvoiceStatus(
-          result.parameters.fields.invoice_number.stringValue, 
-          lang, 
-          sessionId
-        );
-      }
-  
-      if (result.intent?.displayName === 'FAQ_Quotation' && 
-          result.parameters.fields.quotation_number?.stringValue) {
-        return this.handleQuotationStatus(
-          result.parameters.fields.quotation_number.stringValue, 
-          lang, 
-          sessionId
-        );
-      }
-  
-      return {
-        fulfillmentText: result.fulfillmentText,
-        intent: result.intent?.displayName,
+        fulfillmentText: addResult.message,
+        intent: result.intent.displayName,
         parameters: result.parameters,
         outputContexts: result.outputContexts,
-        allRequiredParamsPresent: result.allRequiredParamsPresent
-      };
-    } catch (error) {
-      console.error('Dialogflow error:', error);
-      return {
-        fulfillmentText: t.error,
-        outputContexts: []
+        allRequiredParamsPresent: true
       };
     }
-  }
-  
-  // Ajoutez cette méthode pour convertir le statut string en enum
-  private mapStatusStringToEnum(statusString?: string): EXPENSQUOTATION_STATUS {
-    if (!statusString) return EXPENSQUOTATION_STATUS.Draft;
+
+    // Ensuite traiter CreateQuotation
+    if (result.intent?.displayName === 'CreateQuotation' && 
+      result.allRequiredParamsPresent) {
+    const params = result.parameters.fields;
     
-    const statusMap = {
-      'expense_quotation.status.draft': EXPENSQUOTATION_STATUS.Draft,
-      'expense_quotation.status.validated': EXPENSQUOTATION_STATUS.Validated,
-      'expense_quotation.status.expired': EXPENSQUOTATION_STATUS.Expired
+    // Convert Dialogflow date parameters to JavaScript Date objects
+    const parseDialogflowDate = (dateParam: any): Date | undefined => {
+      if (!dateParam) return undefined;
+      
+      // Dialogflow returns dates in this structure when using @sys.date
+      if (dateParam.structValue) {
+        const dateObj = dateParam.structValue.fields;
+        return new Date(
+          dateObj.year.numberValue,
+          dateObj.month.numberValue - 1, // months are 0-indexed in JS
+          dateObj.day.numberValue
+        );
+      }
+      // Fallback for string dates
+      return dateParam.stringValue ? new Date(dateParam.stringValue) : undefined;
     };
+      
+      const articles = [];
+      if (params.articleId) {
+        articles.push({
+          articleId: params.articleId.numberValue,
+          quantity: params.quantity?.numberValue || 1,
+          discount: params.discount?.numberValue,
+          discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE
+        });
+      }
+
+      const creationResult = await this.createQuotation({
+        firmName: params.firmName.stringValue,
+        cabinetId: params.cabinetId?.numberValue || 1,
+        interlocutorName: params.interlocutorName.stringValue,
+        currencyId: params.currencyId?.numberValue,
+        object: params.object?.stringValue,
+        sequentialNumbr: params.sequentialNumbr?.stringValue,
+        articles: articles,
+        status: this.mapStatusStringToEnum(params.status?.stringValue),
+        dueDate: parseDialogflowDate(params.duedate),
+        date: parseDialogflowDate(params.date)
+      }, lang);
   
-    return statusMap[statusString] || EXPENSQUOTATION_STATUS.Draft;
+      return {
+        fulfillmentText: creationResult.message,
+        intent: result.intent.displayName,
+        parameters: result.parameters,
+        outputContexts: result.outputContexts,
+        allRequiredParamsPresent: true
+      };
+    }
+
+    // Traitement des autres intents
+    if (result.intent?.displayName === 'FAQ_Invoice' && 
+        result.parameters.fields.invoice_number?.stringValue) {
+      return this.handleInvoiceStatus(
+        result.parameters.fields.invoice_number.stringValue, 
+        lang, 
+        sessionId
+      );
+    }
+
+    if (result.intent?.displayName === 'FAQ_Quotation' && 
+        result.parameters.fields.quotation_number?.stringValue) {
+      return this.handleQuotationStatus(
+        result.parameters.fields.quotation_number.stringValue, 
+        lang, 
+        sessionId
+      );
+    }
+
+    return {
+      fulfillmentText: result.fulfillmentText,
+      intent: result.intent?.displayName,
+      parameters: result.parameters,
+      outputContexts: result.outputContexts,
+      allRequiredParamsPresent: result.allRequiredParamsPresent
+    };
+  } catch (error) {
+    console.error('Dialogflow error:', error);
+    return {
+      fulfillmentText: t.error,
+      outputContexts: []
+    };
   }
+}
+
+public async getFirmByName(name: string) {
+  return this.firmRepository.findOne({
+      where: { name },
+      relations: ['interlocutorsToFirm', 'interlocutorsToFirm.interlocutor']
+  });
+}
+private async addArticleToQuotation(
+  params: {
+    quotationNumber?: string;
+    articleId: number;
+    quantity: number;
+    discount?: number;
+    discount_type?: DISCOUNT_TYPES;
+    unit_price?: number;
+  },
+  lang: string = 'fr'
+): Promise<{ success: boolean; message: string; articleId?: number }> {
+  const t = this.getTranslation(lang);
+  const queryRunner = this.dataSource.createQueryRunner();
+  
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
+  try {
+    // 1. Vérification/création de l'article avec le repository standard
+    let article = await this.articleRepository.findOne({ 
+      where: { id: params.articleId }
+    });
+
+    if (!article) {
+      article = this.articleRepository.create({
+        id: params.articleId,
+        title: `Article ${params.articleId}`,
+        description: 'Créé automatiquement',
+        salePrice: params.unit_price || 100,
+        purchasePrice: params.unit_price ? params.unit_price * 0.8 : 80,
+        quantityInStock: 0,
+        status: 'active',
+        version: 1
+      });
+      article = await this.articleRepository.save(article);
+    }
+
+    // 2. Création de l'entrée avec le repository spécifique
+    const articleEntry = this.articleEntryRepository.create({
+      article: article,
+      quantity: params.quantity,
+      unit_price: params.unit_price ?? article.salePrice,
+      discount: params.discount || 0,
+      discount_type: params.discount_type || DISCOUNT_TYPES.PERCENTAGE,
+      subTotal: (params.unit_price ?? article.salePrice) * params.quantity,
+      total: (params.unit_price ?? article.salePrice) * params.quantity * 
+             (1 - (params.discount_type === DISCOUNT_TYPES.AMOUNT ? 
+                  (params.discount || 0) / ((params.unit_price ?? article.salePrice) * params.quantity) : 
+                  (params.discount || 0) / 100)
+    )});
+
+    // 3. Lien avec le devis si nécessaire
+    if (params.quotationNumber) {
+      const quotation = await this.expensQuotationRepository.findOne({
+        where: { sequentialNumbr: params.quotationNumber }
+      });
+      
+      if (quotation) {
+        articleEntry.expenseQuotation = quotation;
+        await this.expensQuotationRepository.update(quotation.id, {
+          subTotal: quotation.subTotal + articleEntry.subTotal,
+          total: quotation.total + articleEntry.total
+        });
+      }
+    }
+
+    // 4. Sauvegarde finale
+    await this.articleEntryRepository.save(articleEntry);
+    await queryRunner.commitTransaction();
+
+    // Vérification immédiate en base
+    const exists = await this.articleEntryRepository.findOne({
+      where: { article: { id: article.id } },
+      relations: ['article']
+    });
+
+    if (!exists) {
+      throw new Error("La création a échoué silencieusement");
+    }
+
+    return {
+      success: true,
+      message: lang === 'fr'
+        ? `Article "${article.title}" (ID:${article.id}) ajouté avec succès`
+        : `Article "${article.title}" (ID:${article.id}) added successfully`,
+      articleId: article.id
+    };
+
+  } catch (error) {
+    await queryRunner.rollbackTransaction();
+    console.error('Erreur complète:', {
+      params,
+      error: error.message,
+      stack: error.stack
+    });
+    return {
+      success: false,
+      message: `${lang === 'fr' ? "Erreur technique" : "Technical error"}: ${error.message}`
+    };
+  } finally {
+    await queryRunner.release();
+  }
+}
+
+private mapStatusStringToEnum(statusString?: string): EXPENSQUOTATION_STATUS {
+  if (!statusString) return EXPENSQUOTATION_STATUS.Draft;
+  
+  const statusMap = {
+    'expense_quotation.status.draft': EXPENSQUOTATION_STATUS.Draft,
+    'expense_quotation.status.validated': EXPENSQUOTATION_STATUS.Validated,
+    'expense_quotation.status.expired': EXPENSQUOTATION_STATUS.Expired
+  };
+
+  return statusMap[statusString] || EXPENSQUOTATION_STATUS.Draft;
+}
+
+public async getArticleInfo(articleId: number, lang: string = 'fr') {
+  try {
+    return await this.articleRepository.findOne({
+      where: { id: articleId },
+      select: ['id', 'title', 'salePrice'] // Sélectionnez les champs nécessaires
+    });
+  } catch (error) {
+    return null;
+  }
+}
   private async handleQuotationStatus(
     quotationNumber: string,
     lang: string,
@@ -326,36 +472,7 @@ export class DialogflowService {
     return null;
   }
 
-  private parseArticlesInput(input: string): Array<{
-    articleId: number;
-    quantity: number;
-    discount?: number;
-    discount_type?: DISCOUNT_TYPES;
-  }> {
-    try {
-      // Expected format: [id:1,quantity:2,discount:10], [id:3,quantity:1]
-      const articles = input.split('], [').map(item => 
-        item.replace(/[\[\]]/g, '').split(',')
-      );
-      
-      return articles.map(articleParts => {
-        const articleData: any = {};
-        articleParts.forEach(part => {
-          const [key, value] = part.split(':');
-          articleData[key] = value;
-        });
-        
-        return {
-          articleId: parseInt(articleData.id),
-          quantity: parseInt(articleData.quantity),
-          discount: articleData.discount ? parseFloat(articleData.discount) : undefined,
-          discount_type: articleData.discount_type as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE
-        };
-      });
-    } catch (error) {
-      throw new Error("Format d'articles invalide. Utilisez [id:XX,quantity:XX,discount:XX]");
-    }
-  }
+ 
 
   private extractInvoiceNumber(text: string): string | null {
     const patterns = [
@@ -574,9 +691,9 @@ export class DialogflowService {
 
   public async createQuotation(
     params: {
-      firmId: number;
-      cabinetId?: number; // Maintenant optionnel
-      interlocutorId: number;
+      firmName: string;
+      cabinetId?: number;
+      interlocutorName: string;
       currencyId?: number;
       object?: string;
       sequentialNumbr?: string;
@@ -591,10 +708,10 @@ export class DialogflowService {
       pdfFileId?: number;
       generalConditions?: string;
       status?: EXPENSQUOTATION_STATUS;
-      dueDate?: Date;
+      dueDate?: Date | string;       
       notes?: string;
-      date?: Date;
-      discount?: number;
+      date?: Date | string;
+       discount?: number;
       discount_type?: DISCOUNT_TYPES;
       taxStamp?: number;
       expenseMetaDataId?: number;
@@ -610,21 +727,32 @@ export class DialogflowService {
   
     try {
       // Validation des champs obligatoires
-      if (!params.interlocutorId || !params.articles || params.articles.length === 0) {
+      if (!params.interlocutorName || !params.articles || params.articles.length === 0) {
         throw new Error(t.missingRequiredFields);
       }
   
-      // Vérification de l'interlocuteur
-      const interlocutor = await this.interlocutorRepository.findOne({
-        where: { id: params.interlocutorId }
+      // Récupération de la firme par nom
+      const firm = await this.firmRepository.findOne({
+        where: { name: params.firmName },
+        relations: ['interlocutorsToFirm', 'interlocutorsToFirm.interlocutor']
       });
       
-      if (!interlocutor) {
-        throw new Error(t.interlocutorNotFound);
+      if (!firm) {
+        throw new Error(`Firm with name ${params.firmName} not found`);
       }
   
-      // Vérification du cabinet (si fourni)
-     
+      // Recherche de l'interlocuteur par nom dans la firme
+      const normalizedInput = params.interlocutorName.toLowerCase().trim();
+      const interlocutorEntry = firm.interlocutorsToFirm.find(entry => {
+        const fullName = `${entry.interlocutor.name} ${entry.interlocutor.surname}`.toLowerCase().trim();
+        return fullName === normalizedInput;
+      });
+  
+      if (!interlocutorEntry) {
+        throw new Error(`Interlocutor ${params.interlocutorName} not found in firm ${params.firmName}`);
+      }
+  
+      const interlocutor = interlocutorEntry.interlocutor;
   
       // Traitement des articles
       const articleEntries: ArticleExpensQuotationEntryEntity[] = [];
@@ -681,10 +809,10 @@ export class DialogflowService {
   
       // Création du devis
       const quotation = new ExpensQuotationEntity();
-      quotation.firmId = params.firmId;
-      quotation.cabinetId = params.cabinetId ?? 1; // Valeur par défaut 1 si non fourni
+      quotation.firmId = firm.id;
+      quotation.cabinetId = params.cabinetId ?? firm.cabinetId ?? 1;
       quotation.interlocutor = interlocutor;
-      quotation.currencyId = params.currencyId ?? 1;
+      quotation.currencyId = params.currencyId ?? firm.currencyId ?? 1;
       quotation.object = params.object ?? `Devis ${new Date().toLocaleDateString()}`;
       quotation.status = params.status ?? EXPENSQUOTATION_STATUS.Draft;
       quotation.generalConditions = params.generalConditions ?? '';
@@ -692,9 +820,11 @@ export class DialogflowService {
       quotation.pdfFileId = params.pdfFileId ?? null;
       quotation.sequentialNumbr = sequentialNumbr;
       quotation.sequential = sequentialNumbr;
-      quotation.date = params.date ?? new Date();
-      quotation.dueDate = params.dueDate ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      quotation.subTotal = subTotal;
+      const parsedDate = typeof params.date === 'string' ? new Date(params.date) : params.date;
+      const parsedDueDate = typeof params.dueDate === 'string' ? new Date(params.dueDate) : params.dueDate;
+      // Utilisation des dates converties
+      quotation.date = parsedDate ?? new Date();
+      quotation.dueDate = parsedDueDate ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
       quotation.total = total;
       quotation.notes = params.notes ?? '';
       quotation.discount = params.discount ?? 0;
@@ -728,7 +858,7 @@ export class DialogflowService {
           date: savedQuotation.date,
           dueDate: savedQuotation.dueDate,
           articleCount: articleEntries.length,
-          cabinetId: savedQuotation.cabinetId // Retourne l'ID du cabinet utilisé
+          cabinetId: savedQuotation.cabinetId
         }
       };
   
@@ -759,14 +889,5 @@ export class DialogflowService {
     
     return 1;
   }
-  public async getArticleInfo(articleId: number, lang: string = 'fr') {
-    try {
-      return await this.articleRepository.findOne({
-        where: { id: articleId },
-        select: ['id', 'title', 'salePrice'] // Sélectionnez les champs nécessaires
-      });
-    } catch (error) {
-      return null;
-    }
-  }
+  
 }

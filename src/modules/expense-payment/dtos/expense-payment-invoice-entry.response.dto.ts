@@ -21,4 +21,10 @@ export class ResponseExpensePaymentInvoiceEntryDto {
     type: Number,
   })
   amount?: number;
+
+  @ApiProperty({
+    example: '3.3',
+    type: Number,
+  })
+  exchangeRate?: number;
 }

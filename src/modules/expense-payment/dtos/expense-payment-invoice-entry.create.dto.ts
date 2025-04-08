@@ -20,4 +20,23 @@ export class ExpenseCreatePaymentInvoiceEntryDto {
     type: Number,
   })
   digitAfterComma?: number;
+
+  @ApiProperty({
+    example: '3.3',
+    type: Number,
+  })
+  exchangeRate?: number;
+
+  @ApiProperty({
+    example: '3.3',
+    type: Number,
+  })
+  originalAmount?: number;
+
+  @ApiProperty({
+    example: '1',
+    type: Number,
+  })
+  originalCurrencyId?: number;
+
 }

@@ -92,7 +92,8 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpensePaymentController,
     ExpensePaymentConditionController,
     ArticleHistoryController,
-    DialogflowController
+    DialogflowController,
+    OcrController
 
 
 
@@ -129,7 +130,8 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpensePaymentModule,
     ExpensePaymentConditionModule,
     ArticleHistoryModule,
-    DialogflowModule
+    DialogflowModule,
+    OcrModule
 
 
 

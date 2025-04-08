@@ -30,4 +30,15 @@ export class ExpensePaymentInvoiceEntryEntity extends EntityHelper {
 
   @Column({ type: 'float', nullable: true })
   amount: number;
+  @Column({ type: 'float', nullable: true, default: 1.0 })
+  exchangeRate: number;
+
+  @Column({ type: 'float', nullable: true })
+  originalAmount: number;
+
+  @Column({ type: 'int', nullable: true })
+  originalCurrencyId: number;
+
+  @Column({ type: 'int', nullable: true })
+  digitAfterComma: number;
 }
