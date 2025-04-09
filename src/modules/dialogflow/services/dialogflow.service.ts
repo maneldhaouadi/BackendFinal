@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as dialogflow from '@google-cloud/dialogflow';
 import * as fs from 'fs';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, LessThan, MoreThan, Not, Repository } from 'typeorm';
 import { ExpensQuotationEntity } from 'src/modules/expense_quotation/repositories/entities/expensquotation.entity';
 import { EXPENSQUOTATION_STATUS } from 'src/modules/expense_quotation/enums/expensquotation-status.enum';
 import { EXPENSE_INVOICE_STATUS } from 'src/modules/expense-invoice/enums/expense-invoice-status.enum';
@@ -889,5 +889,422 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
     
     return 1;
   }
+  // Dans DialogflowService
+// Dans DialogflowService
+public async getPredictedLatePayments(
+  firmId: number,
+  minAmount: number = 100,
+  currency: string = 'EUR',
+  daysAhead: number = 30
+) {
+  try {
+    // 1. Vérifier la devise
+    const currencyEntity = await this.currencyRepository.findOne({ 
+      where: { code: currency } 
+    });
+    
+    if (!currencyEntity) {
+      throw new Error(`Devise ${currency} non trouvée`);
+    }
+
+    // 2. Calculer les dates importantes
+    const currentDate = new Date();
+    const futureDate = new Date();
+    futureDate.setDate(currentDate.getDate() + daysAhead);
+
+    // 3. Récupérer les factures impayées ou partiellement payées
+    const pendingInvoices = await this.expenseInvoiceRepository
+      .createQueryBuilder('invoice')
+      .leftJoinAndSelect('invoice.currency', 'currency')
+      .leftJoinAndSelect('invoice.payments', 'payments')
+      .where('invoice.firmId = :firmId', { firmId })
+      .andWhere('invoice.status IN (:...statuses)', { 
+        statuses: [
+          'expense_invoice.status.validated',
+          'expense_invoice.status.partially_paid',
+          'expense_invoice.status.unpaid'
+        ] 
+      })
+      .andWhere('currency.id = :currencyId', { currencyId: currencyEntity.id })
+      .andWhere('invoice.total > :minAmount', { minAmount })
+      .andWhere('invoice.dueDate <= :futureDate', { futureDate })
+      .andWhere('invoice.dueDate < :currentDate OR invoice.amountPaid < invoice.total', { 
+        currentDate 
+      })
+      .getMany();
+
+    // 4. Formater les résultats
+    const lateInvoices = pendingInvoices.map(invoice => {
+      const dueDate = new Date(invoice.dueDate);
+      
+      // Conversion en timestamps avant soustraction
+      const currentTimestamp = currentDate.getTime();
+      const dueTimestamp = dueDate.getTime();
+      
+      // Calcul sécurisé
+      const timeDiff = currentTimestamp - dueTimestamp;
+      const daysLate = Math.floor(timeDiff / (1000 * 60 * 60 * 24)); // ms -> jours
+    
+      return {
+        invoiceNumber: invoice.sequentialNumbr || invoice.sequential || `INV-${invoice.id}`,
+        amount: invoice.total,
+        amountPaid: invoice.amountPaid || 0,
+        currency: currency,
+        dueDate: dueDate.toISOString().split('T')[0], // Format YYYY-MM-DD
+        daysLate: Math.max(0, daysLate), // On ne veut pas de valeurs négatives
+        status: invoice.status.replace('expense_invoice.status.', ''),
+        remainingAmount: invoice.total - (invoice.amountPaid || 0)
+      };
+    });
+
+    // 5. Calculer le total
+    const totalRemaining = lateInvoices.reduce(
+      (sum, invoice) => sum + invoice.remainingAmount, 0
+    );
+
+    return {
+      success: true,
+      invoices: lateInvoices,
+      count: lateInvoices.length,
+      totalRemaining: parseFloat(totalRemaining.toFixed(2))
+    };
+
+  } catch (error) {
+    console.error('Erreur:', error);
+    return {
+      success: false,
+      error: error.message,
+      invoices: [],
+      count: 0,
+      totalRemaining: 0
+    };
+  }
+}
+// Dans DialogflowService
+public async handleLatePaymentsInquiry(
+  sessionId: string, 
+  params: any, 
+  contexts: any[]
+) {
+  // Fusionner les paramètres des contextes et ceux de la requête
+  const allParams = {
+    ...this.getCurrentParams(contexts),
+    ...params
+  };
+
+  // Vérifier si nous attendons déjà un paramètre spécifique
+  const awaitingContext = contexts.find(c => c.name.includes('awaiting_'));
+
+  if (awaitingContext) {
+    const paramName = awaitingContext.name.split('awaiting_')[1].split('/')[0];
+    return this.handleParamCollection(
+      sessionId,
+      paramName,
+      params[paramName] || params.queryText,
+      contexts,
+      allParams
+    );
+  }
+
+  // Vérifier les paramètres manquants dans l'ordre souhaité
+  const requiredParams = ['firmId', 'currency', 'minAmount', 'daysAhead'];
+  const missingParam = requiredParams.find(param => !allParams[param]);
+
+  if (missingParam) {
+    return this.buildMissingParamResponse(missingParam, sessionId, allParams, contexts);
+  }
+
+  // Tous les paramètres sont présents - exécuter la requête
+  return this.handleCompleteParams(sessionId, allParams);
+}
+
+private getMissingParam(params: any): string | null {
+  if (!params.firmId) return 'firmId';
+  if (!params.currency) return 'currency'; 
+  if (!params.minAmount) return 'minAmount';
+  if (!params.daysAhead) return 'daysAhead';
+  return null;
+}
+
+
+private buildMissingParamResponse(
+  missingParam: string,
+  sessionId: string,
+  currentParams: any,
+  contexts: any[]
+) {
+  const prompts = {
+    firmId: "Veuillez entrer l'ID de l'entreprise :",
+    currency: "Quelle devise souhaitez-vous utiliser ? (EUR par défaut)",
+    minAmount: "Quel est le montant minimum ? (100 par défaut)",
+    daysAhead: "Sur combien de jours souhaitez-vous vérifier ? (30 par défaut)"
+  };
+
+  // Nettoyer les anciens contextes d'attente
+  const filteredContexts = contexts.filter(c => 
+    !c.name.includes('awaiting_')
+  );
+
+  return {
+    fulfillmentText: prompts[missingParam],
+    outputContexts: [
+      ...filteredContexts,
+      {
+        name: `${sessionId}/contexts/awaiting_${missingParam}`,
+        lifespanCount: 5,
+        parameters: currentParams
+      }
+    ]
+  };
+}
+async handleParamCollection(
+  sessionId: string,
+  paramName: string,
+  paramValue: any,
+  contexts: any[],
+  currentParameters: any
+) {
+  try {
+    // 1. Valider le paramètre
+    if (!this.validateParam(paramName, paramValue)) {
+      return this.buildValidationError(paramName, contexts);
+    }
+
+    // 2. Mettre à jour les paramètres
+    const updatedParams = {
+      ...currentParameters,
+      [paramName]: paramValue
+    };
+
+    // 3. Nettoyer le contexte d'attente actuel
+    const filteredContexts = contexts.filter(c => 
+      !c.name.includes('awaiting_')
+    );
+
+    // 4. Vérifier le prochain paramètre manquant
+    const nextMissingParam = this.getNextMissingParam(updatedParams);
+
+    if (nextMissingParam) {
+      return this.buildParamPrompt(nextMissingParam, sessionId, updatedParams);
+    }
+
+    // 5. Tous paramètres présents - exécuter la requête
+    return this.handleCompleteParams(sessionId, updatedParams);
+  } catch (error) {
+    console.error('Error in handleParamCollection:', error);
+    return {
+      fulfillmentText: `❌ Erreur: ${error.message || 'Une erreur inconnue est survenue'}`,
+      outputContexts: contexts
+    };
+  }
+}
+
+private buildValidationError(paramName: string, contexts: any[]) {
+  const errorMessages = {
+    firmId: "❌ ID entreprise invalide. Veuillez entrer un nombre positif.",
+    currency: "❌ Devise non supportée. Choisissez EUR, USD ou GBP.",
+    minAmount: "❌ Montant invalide. Entrez un nombre positif.",
+    daysAhead: "❌ Période invalide. Doit être entre 1 et 365 jours."
+  };
+
+  return {
+    fulfillmentText: errorMessages[paramName] || "Valeur incorrecte",
+    outputContexts: contexts // Conserve le contexte actuel pour réessayer
+  };
+}
+private async handleCompleteParams(sessionId: string, completeParams: any) {
+  try {
+    // Convertir les types
+    const params = {
+      firmId: Number(completeParams.firmId),
+      currency: completeParams.currency ? String(completeParams.currency).toUpperCase() : 'EUR',
+      minAmount: completeParams.minAmount ? Number(completeParams.minAmount) : 100,
+      daysAhead: completeParams.daysAhead ? Number(completeParams.daysAhead) : 30
+    };
+
+    const results = await this.getLatePayments(params);
+    
+    if (!results.success) {
+      throw new Error(results.error);
+    }
+
+    return this.buildFinalResponse(results, sessionId);
+  } catch (error) {
+    console.error('Error in handleCompleteParams:', error);
+    return {
+      fulfillmentText: `❌ Erreur: ${error.message || 'Erreur lors du traitement'}`,
+      outputContexts: []
+    };
+  }
+}
+private validateParam(paramName: string, value: any): boolean {
+  const validators = {
+    firmId: (v) => !isNaN(Number(v)) && Number(v) > 0,
+    currency: (v) => ['EUR', 'USD', 'GBP'].includes(String(v).toUpperCase()),
+    minAmount: (v) => !isNaN(Number(v)) && Number(v) >= 0,
+    daysAhead: (v) => !isNaN(Number(v)) && Number(v) > 0 && Number(v) <= 365
+  };
+
+  if (!validators[paramName]) {
+    console.error(`No validator defined for parameter: ${paramName}`);
+    return false;
+  }
+
+  return validators[paramName](value);
+}
+
+
+
+private buildParamPrompt(param: string, sessionId: string, currentParams: any) {
+  const prompts = {
+    firmId: "Veuillez entrer l'ID de l'entreprise :",
+    currency: "Quelle devise ? (EUR par défaut)",
+    minAmount: "Montant minimum ? (100 par défaut)", 
+    daysAhead: "Période en jours ? (30 par défaut)"
+  };
+
+  return {
+    fulfillmentText: prompts[param],
+    outputContexts: [{
+      name: `projects/your-project/sessions/${sessionId}/contexts/awaiting_${param}`,
+      lifespanCount: 5,
+      parameters: currentParams // Conserve TOUS les paramètres
+    }]
+  };
+}
+private getCurrentParams(contexts: any[]): any {
+  const contextWithParams = contexts.find(c => c.parameters);
+  return contextWithParams?.parameters || {};
+}
+
+private getNextMissingParam(params: any): string | null {
+  // Ordre dans lequel nous demandons les paramètres
+  const paramOrder = ['firmId', 'currency', 'minAmount', 'daysAhead'];
   
+  for (const param of paramOrder) {
+    if (!params[param] && params[param] !== 0) { // 0 est une valeur valide pour certains paramètres
+      return param;
+    }
+  }
+  return null;
+}
+private buildFinalResponse(results: any, sessionId: string) {
+  if (!results.success) {
+    return {
+      fulfillmentText: `❌ Erreur: ${results.error}`,
+      outputContexts: []
+    };
+  }
+
+  if (results.count === 0) {
+    return {
+      fulfillmentText: "✅ Aucune facture en retard trouvée pour ces critères.",
+      outputContexts: []
+    };
+  }
+
+  let responseText = `📊 ${results.count} facture(s) en retard\n`;
+  responseText += `💶 Total restant dû: ${results.totalRemaining} ${results.invoices[0]?.currency || 'EUR'}\n\n`;
+  
+  results.invoices.forEach(invoice => {
+    responseText += `➤ Facture ${invoice.invoiceNumber}: `;
+    responseText += `${invoice.remainingAmount} ${invoice.currency} `;
+    responseText += `(retard: ${invoice.daysLate} jour(s), `;
+    responseText += `échéance: ${invoice.dueDate})\n`;
+  });
+
+  return {
+    fulfillmentText: responseText,
+    outputContexts: [{
+      name: `${sessionId}/contexts/payment_results`,
+      lifespanCount: 1,
+      parameters: results
+    }]
+  };
+}
+
+private formatResultsText(results: any): string {
+  let text = `📊 ${results.count} factures impayées\n`;
+  text += `💶 Total: ${results.total.toFixed(2)}€\n\n`;
+  
+  for (const [status, count] of Object.entries(results.byStatus)) {
+    text += `• ${status}: ${count} factures\n`;
+  }
+  
+  return text;
+}
+private buildErrorResponse(error: Error, sessionId: string) {
+  return {
+    fulfillmentText: "Désolé, une erreur s'est produite lors de la recherche.",
+    outputContexts: [{
+      name: `${sessionId}/contexts/error_occurred`,
+      lifespanCount: 1,
+      parameters: {
+        error: error.message
+      }
+    }]
+  };
+}
+async getLatePayments(params: {
+  firmId: number;
+  currency?: string;
+  minAmount?: number;
+  daysAhead?: number;
+}) {
+  try {
+    // 1. Calculer la date limite
+    const dateThreshold = new Date();
+    dateThreshold.setDate(dateThreshold.getDate() + (params.daysAhead || 30));
+
+    // 2. Construire la requête
+    const query = this.expenseInvoiceRepository
+      .createQueryBuilder('invoice')
+      .leftJoinAndSelect('invoice.currency', 'currency')
+      .where('invoice.firmId = :firmId', { firmId: params.firmId })
+      .andWhere('invoice.status != :status', { status: 'expense_invoice.status.paid' })
+      .andWhere('invoice.dueDate < :threshold', { threshold: dateThreshold });
+
+    // 3. Ajouter les filtres optionnels
+    if (params.currency) {
+      query.andWhere('currency.code = :currency', { 
+        currency: params.currency.toUpperCase() 
+      });
+    }
+
+    if (params.minAmount) {
+      query.andWhere('invoice.total > :minAmount', { 
+        minAmount: params.minAmount 
+      });
+    }
+
+    // 4. Exécuter la requête
+    const invoices = await query.getMany();
+
+    // 5. Formater les résultats
+    return {
+      success: true,
+      count: invoices.length,
+      invoices: invoices.map(invoice => ({
+        id: invoice.id,
+        number: invoice.sequentialNumbr,
+        amount: invoice.total,
+        currency: invoice.currency?.code || 'EUR',
+        dueDate: invoice.dueDate,
+        status: invoice.status.replace('expense_invoice.status.', '')
+      })),
+      totalRemaining: invoices.reduce((sum, inv) => sum + (inv.total - (inv.amountPaid || 0)), 0)
+    };
+
+  } catch (error) {
+    console.error('Database error:', error);
+    return {
+      success: false,
+      error: error.message,
+      count: 0,
+      invoices: [],
+      totalRemaining: 0
+    };
+  }
+}
+
 }

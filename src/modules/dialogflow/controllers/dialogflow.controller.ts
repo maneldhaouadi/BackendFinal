@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Logger, Get, Param, Headers } from '@nestjs/common';
+import { Controller, Post, Body, Logger, Get, Param, Headers, Query } from '@nestjs/common';
 import { DialogflowService } from '../services/dialogflow.service';
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
 import { EXPENSQUOTATION_STATUS } from 'src/modules/expense_quotation/enums/expensquotation-status.enum';
@@ -688,4 +688,106 @@ private extractNumberFromParams(parameters: any, paramName: string): number | nu
       timestamp: new Date().toISOString()
     };
   }
+  // Dans DialogflowController
+// Dans DialogflowController
+@Get('late-invoices/:firmId')
+public async getLateInvoices(
+  @Param('firmId') firmId: number,
+  @Query('minAmount') minAmount: number,
+  @Query('currency') currency: string,
+  @Query('days') daysAhead: number,
+  @Headers('accept-language') acceptLanguage: string
+) {
+  const lang = this.parseLanguageHeader(acceptLanguage);
+  
+  try {
+    // Appliquer les valeurs par défaut
+    minAmount = minAmount ? Number(minAmount) : 100;
+    currency = currency || 'EUR';
+    daysAhead = daysAhead ? Number(daysAhead) : 30;
+
+    const result = await this.dialogflowService.getPredictedLatePayments(
+      Number(firmId),
+      minAmount,
+      currency,
+      daysAhead
+    );
+
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+
+    // Formater la réponse
+    return {
+      success: true,
+      firmId: Number(firmId),
+      minAmount,
+      currency,
+      daysAhead,
+      lateInvoices: result.invoices,
+      count: result.count,
+      totalRemaining: result.totalRemaining,
+      timestamp: new Date().toISOString()
+    };
+
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+      message: 'Erreur lors de la récupération des factures en retard',
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+@Post('dialogflow-webhook')
+async handleDialogflowWebhook(@Body() body: any) {
+  const session = body.session;
+  const sessionId = session.split('/').pop();
+  const params = body.queryResult?.parameters || {};
+  const contexts = body.queryResult?.outputContexts || [];
+
+  // Vérifier l'intention
+  if (body.queryResult?.intent?.displayName === 'predict.late.payments') {
+    return this.dialogflowService.handleLatePaymentsInquiry(
+      sessionId,
+      params,
+      contexts
+    );
+  }
+
+  // Gérer les réponses aux questions de paramètres
+  const awaitingContext = contexts.find(c => 
+    c.name.includes('awaiting_') && 
+    c.lifespanCount && 
+    c.lifespanCount > 0
+  );
+
+  if (awaitingContext) {
+    const paramName = awaitingContext.name.split('awaiting_')[1].split('/')[0];
+    const paramValue = params[paramName] || body.queryResult?.queryText;
+    
+    return this.dialogflowService.handleParamCollection(
+      sessionId,
+      paramName,
+      paramValue,
+      contexts,
+      awaitingContext.parameters
+    );
+  }
+
+  return this.handleDefaultResponse(body.queryResult?.queryText || '', sessionId);
+}
+
+
+private handleDefaultResponse(queryText: string, sessionId: string) {
+  // Logique pour les requêtes sans intent clair
+  return {
+    fulfillmentText: "Je n'ai pas compris votre demande. Essayez de reformuler.",
+    outputContexts: [{
+      name: `${sessionId}/contexts/fallback`,
+      lifespanCount: 1
+    }]
+  };
+}
 }

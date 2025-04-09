@@ -65,6 +65,7 @@
     "nestjs-command": "^3.1.4",
     "nestjs-i18n": "^10.4.5",
     "passport-jwt": "^4.0.1",
+    "pdf2json": "^3.1.5",
     "puppeteer": "^22.15.0",
     "reflect-metadata": "^0.2.0",
     "response-time": "^2.3.2",
