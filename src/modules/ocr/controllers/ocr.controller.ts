@@ -61,15 +61,7 @@ export class OcrController {
       throw error;
     }
   }
-/*
-  @Post('article')
-  @UseInterceptors(FileInterceptor('file', {
-    dest: './uploads', // Dossier de destination pour les fichiers uploadés
-  }))
-  async uploadArticle(@UploadedFile() file: Express.Multer.File): Promise<any> {
-    const text = await this.ocrService.extractTextFromImage(file.path);
-    const articleData = await this.ocrService.parseArticleDetailsWithNLP(text);
-    return articleData;
-  }*/
+
+
 }
 

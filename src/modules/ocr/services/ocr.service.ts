@@ -261,49 +261,7 @@ export class OcrService {
     
     return taxes;
   }
-  /*
-
-  async parseArticleDetailsWithNLP(text: string): Promise<ArticleData> {
-    try {
-      const doc = nlp(text);
-      
-      const articleData: ArticleData = {
-        title: this.extractTitle(doc),
-        description: this.extractDescription(doc),
-        category: this.extractCategory(doc),
-        subCategory: null,
-        purchasePrice: this.extractPrice(text),
-        salePrice: null,
-        quantityInStock: this.extractQuantity(text),
-        barcode: this.extractBarcode(text),
-        status: 'Nouveau',
-        version: '1.0',
-        date: new Date()
-      };
-
-      if (articleData.purchasePrice) {
-        articleData.salePrice = articleData.purchasePrice * 1.2;
-      }
-
-      return articleData;
-    } catch (error) {
-      this.logger.error('Erreur dans parseArticleDetailsWithNLP:', error);
-      return {
-        title: null,
-        description: null,
-        category: null,
-        subCategory: null,
-        purchasePrice: null,
-        salePrice: null,
-        quantityInStock: null,
-        barcode: null,
-        status: null,
-        version: null,
-        date: null
-      };
-    }
-  }
-*/
+  
   private extractTitle(doc: any): string | null {
     const titles = doc.nouns().out('array');
     return titles.length > 0 ? titles[0] : null;

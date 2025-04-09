@@ -18,6 +18,8 @@ import { BankAccountModule } from 'src/modules/bank-account/bank-account.module'
 import { BankAccountController } from 'src/modules/bank-account/controllers/bank-account.controller';
 import { CabinetModule } from 'src/modules/cabinet/cabinet.module';
 import { CabinetController } from 'src/modules/cabinet/controllers/cabinet.controller';
+import { CategoryModule } from 'src/modules/category/category.module';
+import { CategoryController } from 'src/modules/category/controllers/category.controller';
 import { CountryController } from 'src/modules/country/controllers/country.controller';
 import { CountryModule } from 'src/modules/country/country.module';
 import { CurrencyController } from 'src/modules/currency/controllers/currency.controller';
@@ -52,6 +54,8 @@ import { QuotationController } from 'src/modules/quotation/controllers/quotation
 import { QuotationModule } from 'src/modules/quotation/quotation.module';
 import { RoleController } from 'src/modules/role/controllers/role.controller';
 import { RoleModule } from 'src/modules/role/role.module';
+import { SubCategoryController } from 'src/modules/sub-category/controllers/subCategory.controller';
+import { SubCategoryModule } from 'src/modules/sub-category/subCategory.module';
 import { TaxWithholdingController } from 'src/modules/tax-withholding/controllers/tax-withholding.controller';
 import { TaxWithholdingModule } from 'src/modules/tax-withholding/tax-withholding.module';
 import { TaxController } from 'src/modules/tax/controllers/tax.controller';
@@ -89,7 +93,9 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpensePaymentController,
     ExpensePaymentConditionController,
     ArticleHistoryController,
-    OcrController
+    OcrController,
+    CategoryController,
+    SubCategoryController
 
 
 
@@ -126,7 +132,9 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpensePaymentModule,
     ExpensePaymentConditionModule,
     ArticleHistoryModule,
-    OcrModule
+    OcrModule,
+CategoryModule,
+SubCategoryModule
 
 
 

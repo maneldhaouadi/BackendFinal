@@ -12,9 +12,10 @@ import {
   BadRequestException,
   NotFoundException,
   Res,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { Response } from 'express';
-import { ApiTags, ApiParam, ApiConsumes, ApiBody, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiParam, ApiConsumes, ApiBody, ApiResponse, ApiOperation } from '@nestjs/swagger';
 import { PageDto } from 'src/common/database/dtos/database.page.dto';
 import { ArticleService } from '../services/article.service';
 import { ResponseArticleDto } from '../dtos/article.response.dto';
@@ -24,6 +25,10 @@ import { IQueryObject } from 'src/common/database/interfaces/database-query-opti
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as path from 'path';
 import { ArticleHistoryService } from 'src/modules/article-history/services/article-history.service';
+import { ArticleEntity } from '../repositories/entities/article.entity';
+import { ArticleData, ArticleOcrService } from 'src/modules/ocr/services/articleOcrService';
+import * as fs from 'fs';
+import { ArticleCompareResponseDto } from '../dtos/article-compare.dto';
 
 @ApiTags('article')
 @Controller({
@@ -34,7 +39,228 @@ export class ArticleController {
   constructor(
     private readonly articleService: ArticleService,
     private readonly articleHistoryService: ArticleHistoryService,
+    private readonly articleOcrService: ArticleOcrService
   ) {}
+
+
+  // article.controller.ts
+// Dans article.controller.ts
+
+@Post('create-from-image')
+@UseInterceptors(FileInterceptor('file'))
+@ApiConsumes('multipart/form-data')
+@ApiBody({ 
+  description: 'Image contenant les données de l\'article',
+  schema: {
+    type: 'object',
+    properties: {
+      file: {
+        type: 'string',
+        format: 'binary'
+      }
+    }
+  }
+})
+async createFromImage(
+  @UploadedFile() file: Express.Multer.File
+): Promise<ResponseArticleDto> {
+  try {
+    if (!file) {
+      throw new BadRequestException('Aucun fichier n\'a été envoyé');
+    }
+
+    // Extraire le texte et créer l'article
+    const text = await this.articleOcrService.extractTextFromImage(file.path);
+    const articleData = await this.articleOcrService.extractArticleData(text);
+    const createdArticle = await this.articleService.createFromOcrData(articleData);
+
+    // Convertir en DTO de réponse
+    return this.mapToResponseDto(createdArticle);
+  } catch (error) {
+    throw new BadRequestException(error.message);
+  }
+}
+
+
+//////////////////////////////////////////
+
+@Post('search-by-ocr')
+@UseInterceptors(FileInterceptor('file'))
+@ApiConsumes('multipart/form-data')
+async searchByOcrData(
+  @UploadedFile() file: Express.Multer.File
+): Promise<ResponseArticleDto[]> {
+  if (!file) {
+    throw new BadRequestException('Aucun fichier image fourni');
+  }
+
+  try {
+    // Vérification du type de fichier
+    if (!file.mimetype.startsWith('image/')) {
+      throw new BadRequestException('Le fichier doit être une image');
+    }
+
+    // Extraction du texte
+    const text = await this.articleOcrService.extractTextFromImage(file.path);
+    
+    // Extraction des données structurées
+    const ocrData = await this.articleOcrService.extractArticleData(text);
+    
+    // Recherche des articles
+    const articles = await this.articleService.searchByOcrData(ocrData);
+    
+    // Conversion en DTO
+    return articles.map(article => ({
+      id: article.id,
+      title: article.title,
+      description: article.description,
+      category: article.category,
+      subCategory: article.subCategory,
+      purchasePrice: article.purchasePrice,
+      salePrice: article.salePrice,
+      quantityInStock: article.quantityInStock,
+      status: article.status,
+      version: article.version,
+      createdAt: article.createdAt,
+      updatedAt: article.updatedAt,
+      deletedAt: article.deletedAt,
+      isDeletionRestricted: article.isDeletionRestricted,
+      history: [] // Initialiser avec tableau vide si non requis
+    }));
+
+  } catch (error) {
+    console.error('Erreur lors de la recherche OCR:', error);
+    throw new BadRequestException(
+      error.response?.message || 'Erreur lors de la recherche par OCR',
+      { cause: error }
+    );
+  } finally {
+    // Nettoyage du fichier temporaire
+    if (file?.path && fs.existsSync(file.path)) {
+      fs.unlinkSync(file.path);
+    }
+  }
+}                      
+
+// Dans article.controller.ts@Post(':id/compare-with-image')
+@Post(':id/compare-with-image')
+@UseInterceptors(FileInterceptor('file'))
+async compareArticleWithImage(
+  @Param('id', ParseIntPipe) id: number,
+  @UploadedFile() file: Express.Multer.File
+): Promise<ArticleCompareResponseDto> {
+  if (!file) {
+    throw new BadRequestException('Aucun fichier image fourni');
+  }
+
+  try {
+    // Récupérer l'article existant
+    const existingArticle = await this.articleService.findOneById(id);
+    
+    // Comparer avec l'image (en passant directement le fichier)
+    const comparisonResult = await this.articleService.compareWithImage(existingArticle, file);
+    
+    return {
+      ...comparisonResult,
+      article: this.mapToResponseDto(existingArticle)
+    };
+  } catch (error) {
+    throw new BadRequestException(error.message);
+  }
+}
+
+  //text similarity 
+
+  // article.controller.ts
+
+// article.controller.ts
+
+@Get('/categories/suggest')
+@ApiResponse({
+  status: 200,
+  description: 'Suggère des catégories similaires à la saisie',
+  type: [String]
+})
+async suggestCategories(
+  @Query('query') query: string
+): Promise<string[]> {
+  if (!query || query.length < 2) {
+    return [];
+  }
+  return this.articleService.findSimilarCategories(query);
+}
+
+@Get('/subcategories/suggest')
+@ApiResponse({
+  status: 200,
+  description: 'Suggère des sous-catégories similaires à la saisie',
+  type: [String]
+})
+async suggestSubCategories(
+  @Query('query') query: string
+): Promise<string[]> {
+  if (!query || query.length < 2) {
+    return [];
+  }
+  return this.articleService.findSimilarSubCategories(query);
+}
+
+@Post('/validate-category')
+@ApiBody({ schema: { type: 'object', properties: { category: { type: 'string' } } } })
+async validateCategory(
+  @Body() body: { category: string }
+): Promise<{ valid: boolean; matches?: string[] }> {
+  return this.articleService.validateCategoryUniqueness(body.category);
+}
+
+@Post('/validate-subcategory')
+@ApiBody({ schema: { type: 'object', properties: { subCategory: { type: 'string' } } } })
+async validateSubCategory(
+  @Body() body: { subCategory: string }
+): Promise<{ valid: boolean; matches?: string[] }> {
+  return this.articleService.validateSubCategoryUniqueness(body.subCategory);
+}
+
+
+
+///
+/////////////////////////////////////////////////////////////////
+@Get('/categories/all')
+@ApiResponse({
+  status: 200,
+  description: 'Retourne toutes les catégories disponibles',
+  type: [String]
+})
+async getAllCategories(): Promise<string[]> {
+  return await this.articleService.getAllCategories();
+}
+
+@Get('/subcategories/all')
+@ApiResponse({
+  status: 200,
+  description: 'Retourne toutes les sous-catégories disponibles',
+  type: [String]
+})
+async getAllSubCategories(): Promise<string[]> {
+  return await this.articleService.getAllSubCategories();
+}
+
+
+
+
+@Get('/categories/search')
+async searchCategories(
+  @Query('query') query: string
+): Promise<string[]> {
+  const allCategories = await this.articleService.getAllCategories();
+  return allCategories.filter(cat => 
+    cat.toLowerCase().includes(query.toLowerCase())
+  );
+}
+
+
+
+/////////////////////////////////////////////////////////
 
   @Post('/save-with-filter-title')
   async saveWithFilterTitle(@Body() createArticleDto: CreateArticleDto): Promise<ResponseArticleDto | { message: string }> {
@@ -249,4 +475,99 @@ export class ArticleController {
       throw new BadRequestException('Erreur lors de l\'analyse des articles. Détails : ' + error.message);
     }
   }*/
+
+
+
+
+
+    ////////////////////////////////////////////////////////////////////////////////
+    @Post('/:id/restore-version/:version')
+    @ApiParam({ name: 'id', type: 'number', required: true })
+    @ApiParam({ name: 'version', type: 'number', required: true })
+    @ApiResponse({
+      status: 200,
+      description: 'Version de l\'article restaurée avec succès',
+      type: ResponseArticleDto
+    })
+    @ApiResponse({
+      status: 404,
+      description: 'Article ou version non trouvée'
+    })
+    async restoreArticleVersion(
+      @Param('id', ParseIntPipe) id: number,
+      @Param('version', ParseIntPipe) version: number
+    ): Promise<ResponseArticleDto> {
+      try {
+        const article = await this.articleService.restoreArticleVersion(id, version);
+        return this.mapToResponseDto(article);
+      } catch (error) {
+        if (error instanceof NotFoundException) {
+          throw new NotFoundException(error.message);
+        }
+        throw new BadRequestException('Erreur lors de la restauration de la version');
+      }
+    }
+    
+    @Get('/:id/versions')
+    @ApiParam({ name: 'id', type: 'number', required: true })
+    @ApiResponse({
+      status: 200,
+      description: 'Liste des versions disponibles pour l\'article',
+      schema: {
+        type: 'object',
+        properties: {
+          versions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                version: { type: 'number' },
+                date: { type: 'string', format: 'date-time' }
+              }
+            }
+          }
+        }
+      }
+    })
+    @ApiResponse({
+      status: 404,
+      description: 'Article non trouvé'
+    })
+    async getAvailableVersions(
+      @Param('id', ParseIntPipe) id: number
+    ): Promise<{ versions: Array<{ version: number, date?: Date }> }> {
+      try {
+        const versions = await this.articleService.getAvailableVersions(id);
+        return { versions };
+      } catch (error) {
+        if (error instanceof NotFoundException) {
+          throw new NotFoundException(error.message);
+        }
+        throw new BadRequestException('Erreur lors de la récupération des versions');
+      }
+    }
+    
+    private mapToResponseDto(article: ArticleEntity): ResponseArticleDto {
+      return {
+        id: article.id,
+        title: article.title,
+        description: article.description,
+        category: article.category,
+        subCategory: article.subCategory,
+        purchasePrice: Number(article.purchasePrice),
+        salePrice: Number(article.salePrice),
+        quantityInStock: Number(article.quantityInStock),
+        status: article.status,
+        version: Number(article.version),
+        createdAt: article.createdAt,
+        updatedAt: article.updatedAt,
+        deletedAt: article.deletedAt,
+        isDeletionRestricted: article.isDeletionRestricted,
+        history: article.history?.map(entry => ({
+          version: Number(entry.version),
+          changes: entry.changes,
+          date: entry.date,
+        })) || [],
+      };
+    }
 }

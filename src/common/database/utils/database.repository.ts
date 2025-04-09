@@ -69,12 +69,15 @@ export abstract class DatabaseAbstractRepository<T>
     return this.getRepository().create(data);
   }
 
-  public async update(
+ public async update(
     id: string | number,
     data: QueryDeepPartialEntity<T>,
   ): Promise<UpdateResult> {
     return await this.getRepository().update(id, data);
   }
+
+
+    
 
   public async updateMany(data: DeepPartial<T>[]): Promise<T[]> {
     return await this.getRepository().save(data);

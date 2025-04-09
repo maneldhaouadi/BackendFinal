@@ -7,7 +7,7 @@ import { ResponseArticleDto } from '../dtos/article.response.dto';
 import { CreateArticleDto } from '../dtos/article.create.dto';
 import { UpdateArticleDto } from '../dtos/article.update.dto';
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
-import { FindManyOptions, FindOneOptions, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
+import { FindManyOptions, FindOneOptions, ILike, LessThanOrEqual, Like, MoreThanOrEqual } from 'typeorm';
 import { QueryBuilder } from 'src/common/database/utils/database-query-builder';
 import { Readable } from 'stream';
 import * as xlsx from 'xlsx';
@@ -17,6 +17,9 @@ import { ArticleHistoryEntity } from 'src/modules/article-history/repositories/e
 import path from 'path';
 import { PdfService } from 'src/common/pdf/services/pdf.service';
 import * as fs from 'fs';
+import { TextSimilarityService } from './TextSimilarityService';
+import { ArticleData, ArticleOcrService } from 'src/modules/ocr/services/articleOcrService';
+import { createWorker } from 'tesseract.js';
 
 @Injectable()
 export class ArticleService {
@@ -24,7 +27,234 @@ export class ArticleService {
     private readonly articleRepository: ArticleRepository,
     private readonly articleHistoryService: ArticleHistoryService,
     private readonly pdfService: PdfService,
+    private readonly textSimilarityService: TextSimilarityService,
+    private readonly articleOcrService: ArticleOcrService
+
+
   ) {}
+
+  //ocr part 
+
+  // Dans article.service.ts
+
+async createFromOcrData(ocrData: ArticleData): Promise<ArticleEntity> {
+  // Valider les données obligatoires
+  if (!ocrData.title || !ocrData.category) {
+    throw new BadRequestException('Le titre et la catégorie sont obligatoires');
+  }
+
+  // Créer le DTO à partir des données OCR
+  const createArticleDto: CreateArticleDto = {
+    title: ocrData.title,
+    description: ocrData.description || '',
+    category: ocrData.category,
+    subCategory: ocrData.subCategory || '',
+    purchasePrice: ocrData.purchasePrice || 0,
+    salePrice: ocrData.salePrice || 0,
+    quantityInStock: ocrData.quantityInStock || 0,
+    status: ocrData.status || 'draft'
+  };
+
+  // Vérifier si l'article existe déjà
+  const existingArticle = await this.articleRepository.findOne({
+    where: { title: createArticleDto.title }
+  });
+
+  if (existingArticle) {
+    throw new BadRequestException('Un article avec ce titre existe déjà');
+  }
+
+  // Créer et sauvegarder le nouvel article
+  return this.save(createArticleDto);
+}
+
+
+///////////////////////////////////////
+async searchByOcrData(ocrData: ArticleData): Promise<ArticleEntity[]> {
+  try {
+    // Construction des conditions de recherche
+    const whereClauses = [];
+    
+    if (ocrData.title) {
+      whereClauses.push({ title: ILike(`%${ocrData.title}%`) });
+    }
+    
+    if (ocrData.category) {
+      whereClauses.push({ category: ILike(`%${ocrData.category}%`) });
+    }
+    
+    if (ocrData.subCategory) {
+      whereClauses.push({ subCategory: ILike(`%${ocrData.subCategory}%`) });
+    }
+    
+    if (ocrData.description) {
+      whereClauses.push({ description: ILike(`%${ocrData.description}%`) });
+    }
+
+    // Si aucune condition n'est spécifiée, retourner vide
+    if (whereClauses.length === 0) {
+      return [];
+    }
+
+    // Recherche avec OR entre les conditions
+    return await this.articleRepository.find({
+      where: whereClauses,
+      take: 20, // Limiter les résultats
+      order: { createdAt: 'DESC' } // Trier par date de création
+    });
+
+  } catch (error) {
+    console.error('Erreur dans searchByOcrData:', error);
+    throw new BadRequestException('Erreur lors de la recherche par OCR');
+  }
+}
+///////////////////////////////////////
+
+
+
+
+// Dans article.service.ts
+async compareWithImage(
+  existingArticle: ArticleEntity,
+  imageFile: Express.Multer.File // Recevoir directement le fichier plutôt que le texte
+): Promise<{
+  differences: Record<string, { oldValue: any; newValue: any }>,
+  ocrData: any,
+  hasDifferences: boolean
+}> {
+  let imagePath: string | undefined;
+  
+  try {
+    // 1. Sauvegarder temporairement le fichier
+    imagePath = `./uploads/compare_${Date.now()}_${imageFile.originalname}`;
+    await fs.promises.writeFile(imagePath, imageFile.buffer);
+
+    // 2. Extraire le texte avec gestion robuste des erreurs
+    let imageText: string;
+    try {
+      imageText = await this.articleOcrService.extractTextFromImage(imagePath);
+    } catch (ocrError) {
+      throw new Error(`Échec OCR: ${ocrError.message}`);
+    }
+
+    // 3. Extraire les données structurées
+    const ocrData = await this.articleOcrService.extractArticleData(imageText);
+    
+    // 4. Comparer les données
+    const differences = this.findDifferences(existingArticle, ocrData);
+    
+    return {
+      differences,
+      ocrData,
+      hasDifferences: Object.keys(differences).length > 0
+    };
+  } catch (error) {
+    throw new Error(`Comparaison impossible: ${error.message}`);
+  } finally {
+    // Nettoyage garantie du fichier temporaire
+    if (imagePath && fs.existsSync(imagePath)) {
+      fs.unlinkSync(imagePath);
+    }
+  }
+}
+
+private findDifferences(
+  existingArticle: ArticleEntity, 
+  ocrData: any
+): Record<string, { oldValue: any; newValue: any }> {
+  const differences: Record<string, { oldValue: any; newValue: any }> = {};
+  
+  const fieldsToCompare = [
+    'title', 'description', 'category', 'subCategory',
+    'purchasePrice', 'salePrice', 'quantityInStock', 'status'
+  ];
+
+  fieldsToCompare.forEach(field => {
+    const existingValue = existingArticle[field];
+    const newValue = ocrData[field];
+
+    // Skip if both values are null/undefined
+    if (existingValue == null && newValue == null) return;
+
+    // Number comparison
+    if (typeof existingValue === 'number') {
+      const numValue = typeof newValue === 'string' ? 
+        parseFloat(newValue.replace(/[^\d.-]/g, '')) : 
+        Number(newValue);
+      
+      if (isNaN(numValue)) {
+        differences[field] = { oldValue: existingValue, newValue };
+        return;
+      }
+
+      if (Math.abs(existingValue - numValue) > 0.001) {
+        differences[field] = { 
+          oldValue: existingValue, 
+          newValue: numValue 
+        };
+      }
+      return;
+    }
+
+    // String comparison
+    const strExisting = String(existingValue ?? '').trim().toLowerCase();
+    const strNew = String(newValue ?? '').trim().toLowerCase();
+    
+    if (strExisting !== strNew) {
+      differences[field] = { 
+        oldValue: existingValue, 
+        newValue 
+      };
+    }
+  });
+
+  return differences;
+}
+// article.service.ts
+
+async findSimilarCategories(input: string): Promise<string[]> {
+  const allCategories = await this.getAllCategories();
+  
+  return allCategories.filter(category => {
+    // Vérifie d'abord l'inclusion simple
+    if (this.textSimilarityService.normalizeText(category).includes(
+       this.textSimilarityService.normalizeText(input))) {
+      return true;
+    }
+    
+    // Puis vérifie la similarité
+    return this.textSimilarityService.isSimilar(input, category);
+  });
+}
+
+async findSimilarSubCategories(input: string): Promise<string[]> {
+  const allSubCategories = await this.getAllSubCategories();
+  
+  return allSubCategories.filter(subCategory => {
+    const normalizedInput = this.textSimilarityService.normalizeText(input);
+    const normalizedSubCat = this.textSimilarityService.normalizeText(subCategory);
+    
+    // Match partiel ou similaire
+    return normalizedSubCat.includes(normalizedInput) || 
+           this.textSimilarityService.isSimilar(input, subCategory);
+  });
+}
+  async validateCategoryUniqueness(category: string): Promise<{valid: boolean; matches?: string[]}> {
+    const similarCategories = await this.findSimilarCategories(category);
+    return {
+      valid: similarCategories.length === 0,
+      matches: similarCategories
+    };
+  }
+
+  async validateSubCategoryUniqueness(subCategory: string): Promise<{valid: boolean; matches?: string[]}> {
+    const similarSubCategories = await this.findSimilarSubCategories(subCategory);
+    return {
+      valid: similarSubCategories.length === 0,
+      matches: similarSubCategories
+    };
+  }
+
 
   /**
    * Récupère un article par son ID.
@@ -244,7 +474,7 @@ export class ArticleService {
 
   /**
    * Met à jour un article.
-   */
+   
   async update(
     id: number,
     updateArticleDto: UpdateArticleDto,
@@ -272,7 +502,7 @@ export class ArticleService {
   
     // Sauvegarder les modifications
     return await this.articleRepository.save(article);
-  }
+  }*/
 
   private getChanges(
     existingArticle: ArticleEntity,
@@ -530,4 +760,146 @@ export class ArticleService {
       throw new BadRequestException('Erreur lors de la récupération des détails de l\'article.');
     }
   }
+
+
+  // article.service.ts
+
+async getAllCategories(): Promise<string[]> {
+  const articles = await this.articleRepository.findAll({
+    select: ['category'],
+    where: { deletedAt: null } // Exclure les articles supprimés
+  });
+  
+  // Extraire les catégories uniques
+  const categories = [...new Set(articles.map(article => article.category))];
+  return categories.filter(category => category); // Filtrer les valeurs null/undefined
+}
+
+async getAllSubCategories(): Promise<string[]> {
+  const articles = await this.articleRepository.findAll({
+    select: ['subCategory'],
+    where: { deletedAt: null } // Exclure les articles supprimés
+  });
+  
+  // Extraire les sous-catégories uniques
+  const subCategories = [...new Set(articles.map(article => article.subCategory))];
+  return subCategories.filter(subCat => subCat); // Filtrer les valeurs null/undefined
+}
+
+
+// Modifier la méthode update existante
+async update(
+  id: number,
+  updateArticleDto: UpdateArticleDto,
+): Promise<ArticleEntity> {
+  // Récupérer l'article existant
+  const article = await this.articleRepository.findOneById(id);
+  
+  if (!article) {
+    throw new NotFoundException('Article non trouvé');
+  }
+
+  // Incrémenter la version
+  const newVersion = article.version + 1;
+
+  // Enregistrer les modifications dans l'historique
+  const changes = this.getChanges(article, updateArticleDto);
+  await this.articleHistoryService.createHistoryEntry({
+    version: newVersion,
+    changes,
+    articleId: article.id,
+  });
+
+  // Mettre à jour les champs de l'article
+  await this.articleRepository.update(id, {
+    ...updateArticleDto,
+    version: newVersion
+  });
+
+  // Retourner l'article mis à jour
+  return this.articleRepository.findOneById(id);
+}
+
+//////////////////////////////////////////////////////////
+async restoreArticleVersion(articleId: number, targetVersion: number): Promise<ArticleEntity> {
+  // 1. Récupérer l'article actuel
+  const currentArticle = await this.articleRepository.findOneById(articleId);
+  if (!currentArticle) {
+    throw new NotFoundException('Article non trouvé');
+  }
+
+  // 2. Récupérer l'historique complet
+  const history = await this.articleHistoryService.getArticleHistory(articleId);
+  
+  // 3. Trouver la version cible exacte
+  const targetVersionEntry = history.find(entry => entry.version === targetVersion);
+  if (!targetVersionEntry) {
+    throw new NotFoundException(`Version ${targetVersion} non trouvée pour cet article`);
+  }
+
+  // 4. Créer un nouvel objet article avec les données de base
+  const restoredArticle = this.articleRepository.create({
+    ...currentArticle,
+    version: currentArticle.version + 1 // On incrémente directement la version
+  });
+
+  // 5. Restaurer chaque champ modifié dans la version cible
+  Object.entries(targetVersionEntry.changes).forEach(([field, change]) => {
+    if (field in restoredArticle) {
+      // Conversion des types pour les champs numériques
+      switch(field) {
+        case 'salePrice':
+        case 'purchasePrice':
+          restoredArticle[field] = parseFloat(change.oldValue);
+          break;
+        case 'quantityInStock':
+          restoredArticle[field] = parseInt(change.oldValue, 10);
+          break;
+        default:
+          restoredArticle[field] = change.oldValue;
+      }
+    }
+  });
+
+  // 6. Enregistrer les changements dans l'historique
+  const changes = this.getChanges(currentArticle, restoredArticle);
+  await this.articleHistoryService.createHistoryEntry({
+    version: restoredArticle.version,
+    changes,
+    articleId,
+  });
+
+  // 7. Sauvegarder l'article restauré
+  await this.articleRepository.save(restoredArticle);
+
+  // 8. Retourner l'article complet
+  return this.articleRepository.findOne({
+    where: { id: articleId },
+    relations: ['history']
+  });
+}
+
+async getAvailableVersions(articleId: number): Promise<{version: number, date?: Date}[]> {
+  const article = await this.articleRepository.findOneById(articleId);
+  if (!article) {
+    throw new NotFoundException('Article non trouvé');
+  }
+
+  const history = await this.articleHistoryService.getArticleHistory(articleId);
+  
+  const versions = history.map(entry => ({
+    version: entry.version,
+    date: entry.date
+  }));
+
+  // Ajouter la version actuelle si elle n'existe pas déjà
+  if (!versions.some(v => v.version === article.version)) {
+    versions.push({
+      version: article.version,
+      date: article.updatedAt || article.createdAt
+    });
+  }
+
+  return versions.sort((a, b) => b.version - a.version);
+}
 }

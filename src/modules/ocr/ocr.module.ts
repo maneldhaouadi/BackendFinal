@@ -1,11 +1,14 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { OcrService } from './services/ocr.service';
 import { OcrController } from './controllers/ocr.controller';
+import { ArticleOcrController } from './controllers/articleOcrController';
+import { ArticleOcrService } from './services/articleOcrService';
+import { ArticleModule } from '../article/article.module'; // <-- importe le module
 
 @Module({
-  controllers: [OcrController],  // Ajoutez OcrController ici
-  providers: [OcrService],       // Ajoutez OcrService ici
-  exports: [OcrService],         // Exportez OcrService si nécessaire
-  imports: [],                   // Vous pouvez importer d'autres modules si nécessaire
+  imports: [forwardRef(() => ArticleModule)], // 🔁 ici aussi
+  controllers: [OcrController, ArticleOcrController],
+  providers: [OcrService, ArticleOcrService],
+  exports: [OcrService, ArticleOcrService],
 })
 export class OcrModule {}
