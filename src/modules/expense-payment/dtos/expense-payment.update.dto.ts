@@ -22,4 +22,10 @@ export class UpdateExpensePaymentDto extends CreateExpensePaymentUploadDto {
         @MaxLength(25)
         sequentialNumbr?: string;
   pdfFileId: any;
+  @ApiProperty({
+    example: '1',
+    type: Number,
+  })
+  currencyId?: number;
+ 
 }

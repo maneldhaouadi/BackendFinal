@@ -70,4 +70,11 @@ export class ExpensePaymentEntity extends EntityHelper {
 
   @Column({ type: 'varchar', length: 25, nullable: true })
   sequentialNumbr: string;
+
+  @ManyToOne(() => CurrencyEntity)
+  @JoinColumn({ name: 'targetCurrencyId' })
+  targetCurrency: CurrencyEntity;
+
+  @Column({ type: 'int', nullable: true })
+  targetCurrencyId: number;
 }

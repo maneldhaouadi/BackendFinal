@@ -295,103 +295,76 @@ private async generateSequentialNumber(): Promise<string> {
     id: number,
     updateInvoiceDto: ExpenseUpdateInvoiceDto,
   ): Promise<ExpenseInvoiceEntity> {
-    // Récupérer l'invoice existante
     const existingInvoice = await this.invoiceRepository.findOne({ where: { id } });
     if (!existingInvoice) {
       throw new Error('Invoice not found');
     }
   
-    // Log des IDs des fichiers reçus du frontend
     console.log('PDF File ID reçu du frontend:', updateInvoiceDto.pdfFileId);
     console.log('IDs des fichiers supplémentaires reçus du frontend:', updateInvoiceDto.uploads?.map(u => u.uploadId));
   
-    // Récupérer les fichiers uploadés existants sous forme de tableau
     const existingUploadEntities = await this.invoiceUploadService.findByInvoiceId(id);
-  
-    // Mapper les entités vers des DTOs
-    const existingUploads = existingUploadEntities.map((upload) => ({
+    const existingUploads = existingUploadEntities.map(upload => ({
       id: upload.id,
       uploadId: upload.uploadId,
-      // Ajoutez d'autres propriétés nécessaires ici
     }));
   
-    // Gérer les fichiers uploadés
     const { keptUploads, newUploads, eliminatedUploads } = await this.updateExpenseInvoiceUpload(
       id,
       updateInvoiceDto,
       existingUploads,
     );
   
-    // Logique pour récupérer ou conserver le numéro séquentiel existant
     const sequentialNumbr = updateInvoiceDto.sequentialNumbr || existingInvoice.sequentialNumbr || null;
-   
   
-  
-    // Si tu as des validations supplémentaires à faire (ex : vérifier firm, bankAccount, etc.)
     const [firm, bankAccount, currency] = await Promise.all([
-      this.firmService.findOneByCondition({
-        filter: `id||$eq||${updateInvoiceDto.firmId}`,
-      }),
-      updateInvoiceDto.bankAccountId
-        ? this.bankAccountService.findOneById(updateInvoiceDto.bankAccountId)
-        : Promise.resolve(null),
-      updateInvoiceDto.currencyId
-        ? this.currencyService.findOneById(updateInvoiceDto.currencyId)
-        : Promise.resolve(null),
+      this.firmService.findOneByCondition({ filter: `id||$eq||${updateInvoiceDto.firmId}` }),
+      updateInvoiceDto.bankAccountId ? this.bankAccountService.findOneById(updateInvoiceDto.bankAccountId) : null,
+      updateInvoiceDto.currencyId ? this.currencyService.findOneById(updateInvoiceDto.currencyId) : null,
     ]);
   
     if (!firm) {
       throw new Error('Firm not found');
     }
   
-    // Récupérer les autres données nécessaires (comme les entrées d'articles, calculs, etc.)
-    const articleEntries =
-      updateInvoiceDto.articleInvoiceEntries &&
-      (await this.articleInvoiceEntryService.saveMany(
-        updateInvoiceDto.articleInvoiceEntries,
-      ));
+    const articleEntries = updateInvoiceDto.articleInvoiceEntries && await this.articleInvoiceEntryService.saveMany(
+      updateInvoiceDto.articleInvoiceEntries,
+    );
   
     if (!articleEntries) {
       throw new Error('Article entries are missing');
     }
   
-    const { subTotal, total } =
-      this.calculationsService.calculateLineItemsTotal(
-        articleEntries.map((entry) => entry.total),
-        articleEntries.map((entry) => entry.subTotal),
-      );
+    const { subTotal, total } = this.calculationsService.calculateLineItemsTotal(
+      articleEntries.map(entry => entry.total),
+      articleEntries.map(entry => entry.subTotal),
+    );
   
-    const taxStamp = updateInvoiceDto.taxStampId
-      ? await this.taxService.findOneById(updateInvoiceDto.taxStampId)
-      : null;
+    const taxStamp = updateInvoiceDto.taxStampId ? await this.taxService.findOneById(updateInvoiceDto.taxStampId) : null;
   
-    const totalAfterGeneralDiscount =
-      this.calculationsService.calculateTotalDiscount(
-        total,
-        updateInvoiceDto.discount,
-        updateInvoiceDto.discount_type,
-        taxStamp?.value || 0,
-      );
+    const totalAfterGeneralDiscount = this.calculationsService.calculateTotalDiscount(
+      total,
+      updateInvoiceDto.discount,
+      updateInvoiceDto.discount_type,
+      taxStamp?.value || 0,
+    );
   
     const lineItems = await this.articleInvoiceEntryService.findManyAsLineItem(
-      articleEntries.map((entry) => entry.id),
+      articleEntries.map(entry => entry.id),
     );
   
     const taxSummary = await Promise.all(
-      this.calculationsService
-        .calculateTaxSummary(lineItems)
-        .map(async (item) => {
-          const tax = await this.taxService.findOneById(item.taxId);
-          return {
-            ...item,
-            label: tax.label,
-            value: tax.isRate ? tax.value * 100 : tax.value,
-            isRate: tax.isRate,
-          };
-        }),
+      this.calculationsService.calculateTaxSummary(lineItems).map(async (item) => {
+        const tax = await this.taxService.findOneById(item.taxId);
+        return {
+          ...item,
+          label: tax.label,
+          value: tax.isRate ? tax.value * 100 : tax.value,
+          isRate: tax.isRate,
+        };
+      }),
     );
   
-    // Utilise le sequentialNumbr dans l'insertion de la facture
     const invoiceMetaData = await this.invoiceMetaDataService.save({
       ...updateInvoiceDto.invoiceMetaData,
       taxSummary,
@@ -399,92 +372,86 @@ private async generateSequentialNumber(): Promise<string> {
   
     let taxWithholdingAmount = 0;
     if (updateInvoiceDto.taxWithholdingId) {
-      const taxWithholding = await this.taxWithholdingService.findOneById(
-        updateInvoiceDto.taxWithholdingId,
-      );
-  
+      const taxWithholding = await this.taxWithholdingService.findOneById(updateInvoiceDto.taxWithholdingId);
       if (taxWithholding.rate !== undefined && taxWithholding.rate !== null) {
-        taxWithholdingAmount =
-          totalAfterGeneralDiscount * (taxWithholding.rate / 100);
+        taxWithholdingAmount = totalAfterGeneralDiscount * (taxWithholding.rate / 100);
       }
     }
   
-    // ✅ Gestion du fichier PDF
-    let pdfFileId = existingInvoice.pdfFileId; // Conserver l'ID du fichier PDF existant par défaut
-  
-    // Si un nouveau fichier PDF est fourni, mettre à jour l'ID
+    let pdfFileId = existingInvoice.pdfFileId;
     if (updateInvoiceDto.pdfFileId) {
-      console.log('PDF File ID reçu du frontend:', updateInvoiceDto.pdfFileId); // Vérifiez l'ID du fichier PDF
+      console.log('PDF File ID reçu du frontend:', updateInvoiceDto.pdfFileId);
       pdfFileId = updateInvoiceDto.pdfFileId;
     }
   
-    // Mettre à jour la facture avec le même numéro séquentiel ou un nouveau
     const updatedInvoice = await this.invoiceRepository.save({
       ...updateInvoiceDto,
-      sequential: sequentialNumbr, // Assurez-vous de passer sequentialNumbr ici
+      sequential: sequentialNumbr,
       bankAccountId: bankAccount ? bankAccount.id : null,
       currencyId: currency ? currency.id : firm.currencyId,
       cabinetId: 1,
-      sequentialNumbr, // Utilisez sequentialNumbr ici
+      sequentialNumbr,
       articleExpenseEntries: articleEntries,
       expenseInvoiceMetaData: invoiceMetaData,
       subTotal,
-      taxWithholdingAmount: taxWithholdingAmount || 0,
+      taxWithholdingAmount,
       total: totalAfterGeneralDiscount,
-      pdfFileId, // Inclure l'ID du fichier PDF (nouveau ou existant)
+      pdfFileId,
     });
   
-    // Gestion des fichiers uploadés
-    if (updateInvoiceDto.uploads) {
-      console.log('Uploads reçus du frontend:', updateInvoiceDto.uploads); // Vérifiez les fichiers uploadés
-      await Promise.all(
-        updateInvoiceDto.uploads.map((u) => {
-          console.log('Upload ID:', u.uploadId); // Vérifiez chaque ID de fichier uploadé
-          return this.invoiceUploadService.save(updatedInvoice.id, u.uploadId);
-        }),
-      );
-    }
+    // Dans la fonction update, supprimez cette partie :
+if (updateInvoiceDto.uploads) {
+  console.log('Uploads reçus du frontend:', updateInvoiceDto.uploads);
+  await Promise.all(
+    updateInvoiceDto.uploads.map((u) => {
+      console.log('Upload ID:', u.uploadId);
+      return this.invoiceUploadService.save(updatedInvoice.id, u.uploadId);
+    }),
+  );
+}
   
-    console.log('Updated Invoice:', updatedInvoice); // Vérifiez la facture mise à jour
+    console.log('Updated Invoice:', updatedInvoice);
     return updatedInvoice;
   }
+  
   async updateExpenseInvoiceUpload(
-    id: number,
+    id: number, // ID de la facture
     updateInvoiceDto: ExpenseUpdateInvoiceDto,
-    existingUploads: ExpenseResponseInvoiceUploadDto[], // Renommer le type pour correspondre au contexte
+    existingUploads: ExpenseResponseInvoiceUploadDto[],
   ) {
     const newUploads = [];
     const keptUploads = [];
     const eliminatedUploads = [];
   
     if (updateInvoiceDto.uploads) {
-        try {
-            // Gestion des fichiers existants
-            for (const upload of existingUploads) {
-                const exists = updateInvoiceDto.uploads.some(
-                    (u) => u.uploadId === upload.uploadId, // Utiliser uploadId pour la correspondance
-                );
-                if (!exists) {
-                    console.log(`Suppression du fichier avec l'uploadId ${upload.uploadId}`);
-                    const deletedUpload = await this.invoiceUploadService.softDelete(upload.id); // Suppression douce
-                    eliminatedUploads.push(deletedUpload);
-                } else {
-                    keptUploads.push(upload); // Conserver le fichier existant
-                }
-            }
-  
-            // Ajout des nouveaux fichiers
-            for (const upload of updateInvoiceDto.uploads) {
-                if (!upload.id) { // Vérifier si c'est un nouveau fichier
-                    console.log(`Ajout d'un nouveau fichier avec l'uploadId ${upload.uploadId}`);
-                    const newUpload = await this.invoiceUploadService.save(id, upload.uploadId); // Enregistrer le nouveau fichier
-                    newUploads.push(newUpload);
-                }
-            }
-        } catch (error) {
-            console.error('Erreur lors de la mise à jour des fichiers uploadés :', error);
-            throw new Error('Erreur lors de la mise à jour des fichiers uploadés');
+      try {
+        // Gestion des fichiers existants
+        for (const upload of existingUploads) {
+          const exists = updateInvoiceDto.uploads.some(
+            (u) => u.uploadId === upload.uploadId,
+          );
+          if (!exists) {
+            console.log(`Suppression du fichier avec l'uploadId ${upload.uploadId}`);
+            const deletedUpload = await this.invoiceUploadService.softDelete(upload.id);
+            eliminatedUploads.push(deletedUpload);
+          } else {
+            keptUploads.push(upload); // Conserver le fichier existant
+          }
         }
+  
+        // Ajout des nouveaux fichiers
+        const existingUploadIds = existingUploads.map(u => u.uploadId);
+        for (const upload of updateInvoiceDto.uploads) {
+          if (!existingUploadIds.includes(upload.uploadId)) { // Vérifier si c'est un nouveau fichier
+            console.log(`Ajout d'un nouveau fichier avec l'uploadId ${upload.uploadId}`);
+            const newUpload = await this.invoiceUploadService.save(id, upload.uploadId); // Associer l'ID de la facture
+            newUploads.push(newUpload);
+          }
+        }
+      } catch (error) {
+        console.error('Erreur lors de la mise à jour des fichiers uploadés :', error);
+        throw new Error('Erreur lors de la mise à jour des fichiers uploadés');
+      }
     }
   
     // Log des fichiers conservés, ajoutés et supprimés
@@ -493,11 +460,14 @@ private async generateSequentialNumber(): Promise<string> {
     console.log('Fichiers supprimés:', eliminatedUploads);
   
     return {
-        keptUploads, // Fichiers conservés
-        newUploads, // Nouveaux fichiers ajoutés
-        eliminatedUploads, // Fichiers supprimés
+      keptUploads,
+      newUploads,
+      eliminatedUploads,
     };
   }
+  
+
+
   async updateFields(
     id: number,
     dict: QueryDeepPartialEntity<ExpenseInvoiceEntity>,

@@ -6,6 +6,8 @@ import { AuthController } from 'src/common/auth/controllers/auth.controller';
 import { LoggerModule } from 'src/common/logger/logger.module';
 import { StorageController } from 'src/common/storage/controllers/storage.controller';
 import { StorageModule } from 'src/common/storage/storage.module';
+import { DialogflowController } from 'src/modules/dialogflow/controllers/dialogflow.controller';
+import { DialogflowModule } from 'src/modules/dialogflow/dialogflow.module';
 import { ActivityModule } from 'src/modules/activity/activity.module';
 import { ActivityController } from 'src/modules/activity/controllers/activity.controller';
 import { AddressModule } from 'src/modules/address/address.module';
@@ -26,6 +28,7 @@ import { CurrencyController } from 'src/modules/currency/controllers/currency.co
 import { CurrencyModule } from 'src/modules/currency/currency.module';
 import { DefaultConditionController } from 'src/modules/default-condition/controllers/default-condition.controller';
 import { DefaultConditionModule } from 'src/modules/default-condition/default-condition.module';
+import { dialogflowModule } from 'src/modules/dialogflow-management/dialogflow-management.module';
 import { ExpenseInvoiceController } from 'src/modules/expense-invoice/controllers/expense-invoice.controller';
 import { ExpenseInvoiceModule } from 'src/modules/expense-invoice/expense-invoice.module';
 import { ExpensePaymentConditionController } from 'src/modules/expense-payment-condition/controllers/expense-payment-condition.controller';
@@ -93,9 +96,14 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpensePaymentController,
     ExpensePaymentConditionController,
     ArticleHistoryController,
+<<<<<<< HEAD
     OcrController,
     CategoryController,
     SubCategoryController
+=======
+    DialogflowController,
+    OcrController
+>>>>>>> ca06f7fe36b1d189ca982184c7c99a680b450de4
 
 
 
@@ -132,9 +140,14 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpensePaymentModule,
     ExpensePaymentConditionModule,
     ArticleHistoryModule,
+<<<<<<< HEAD
     OcrModule,
 CategoryModule,
 SubCategoryModule
+=======
+    DialogflowModule,
+    OcrModule
+>>>>>>> ca06f7fe36b1d189ca982184c7c99a680b450de4
 
 
 
