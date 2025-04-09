@@ -13,6 +13,7 @@ import {
   NotFoundException,
   Res,
   ParseIntPipe,
+  Req,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiParam, ApiConsumes, ApiBody, ApiResponse, ApiOperation } from '@nestjs/swagger';
@@ -26,9 +27,11 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import * as path from 'path';
 import { ArticleHistoryService } from 'src/modules/article-history/services/article-history.service';
 import { ArticleEntity } from '../repositories/entities/article.entity';
-import { ArticleData, ArticleOcrService } from 'src/modules/ocr/services/articleOcrService';
+import {  ArticleOcrService } from 'src/modules/ocr/services/articleOcrService';
 import * as fs from 'fs';
 import { ArticleCompareResponseDto } from '../dtos/article-compare.dto';
+import { PdfExtractionService } from 'src/modules/pdf-extraction/services/pdf-extraction.service';
+import { multerOptions } from 'src/configs/multer.config';
 
 @ApiTags('article')
 @Controller({
@@ -39,10 +42,122 @@ export class ArticleController {
   constructor(
     private readonly articleService: ArticleService,
     private readonly articleHistoryService: ArticleHistoryService,
-    private readonly articleOcrService: ArticleOcrService
+    private readonly articleOcrService: ArticleOcrService,
+    private readonly pdfExtractionService: PdfExtractionService // Ajoutez cette ligne
+
   ) {}
 
 
+  /////////////////////////////pdf extraction 
+// Dans le ArticleController
+// Dans le ArticleController@Post('upload-pdf')
+
+@Post('upload-pdf')
+@UseInterceptors(FileInterceptor('file', multerOptions)) // Utilisez la configuration
+@ApiConsumes('multipart/form-data')
+async uploadPdf(
+  @UploadedFile() file: Express.Multer.File
+) {
+  if (!file) {
+    throw new BadRequestException('No file uploaded');
+  }
+
+  console.log('File received:', {
+    originalname: file.originalname,
+    path: file.path, // Maintenant garanti d'être défini
+    size: file.size,
+    mimetype: file.mimetype
+  });
+
+  try {
+    // Solution 1: Utilisation du fichier temporaire
+    const result = await this.pdfExtractionService.extractArticleDataFromPdf(file.path);
+    
+    // Solution alternative: Utilisation directe du buffer
+    // const result = await this.pdfService.extractFromBuffer(file.buffer);
+    
+    return result;
+  } catch (error) {
+    throw new BadRequestException(`PDF processing failed: ${error.message}`);
+  } finally {
+    // Nettoyage garantie
+    if (file?.path && fs.existsSync(file.path)) {
+      fs.unlinkSync(file.path);
+    }
+  }
+}
+
+
+
+  /////////////////////////
+
+  @Post('create-from-pdf')
+  @UseInterceptors(FileInterceptor('file', multerOptions))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Créer un article à partir des données extraites d\'un PDF' })
+  @ApiResponse({
+    status: 201,
+    description: 'Article créé avec succès à partir du PDF',
+    type: ResponseArticleDto
+  })
+  async createFromPdf(
+    @UploadedFile() file: Express.Multer.File
+  ): Promise<ResponseArticleDto> {
+    try {
+      if (!file) {
+        throw new BadRequestException('Aucun fichier PDF n\'a été envoyé');
+      }
+  
+      // 1. Extraire les données du PDF
+      const pdfData = await this.pdfExtractionService.extractArticleDataFromPdf(file.path);
+      
+      // 2. Créer l'article à partir des données extraites
+      const createdArticle = await this.articleService.createFromPdfData(pdfData);
+  
+      // 3. Retourner l'article créé
+      return this.mapToResponseDto(createdArticle);
+    } catch (error) {
+      throw new BadRequestException(`Erreur lors de la création à partir du PDF: ${error.message}`);
+    } finally {
+      // Nettoyage du fichier temporaire
+      if (file?.path && fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
+      }
+    }
+  }
+
+
+  
+
+  @Post(':id/compare-with-pdf')
+@UseInterceptors(FileInterceptor('file', multerOptions))
+@ApiConsumes('multipart/form-data')
+@ApiOperation({ summary: 'Comparer les données d\'un PDF avec un article existant' })
+async compareWithPdf(
+  @Param('id', ParseIntPipe) id: number,
+  @UploadedFile() file: Express.Multer.File
+) {
+  if (!file) {
+    throw new BadRequestException('Aucun fichier PDF fourni');
+  }
+
+  try {
+    const result = await this.articleService.comparePdfWithArticle(id, file.path);
+    
+    return {
+      ...result,
+      articleId: id,
+      pdfFileName: file.originalname
+    };
+  } catch (error) {
+    throw new BadRequestException(error.message);
+  } finally {
+    // Nettoyage du fichier temporaire
+    if (file?.path && fs.existsSync(file.path)) {
+      fs.unlinkSync(file.path);
+    }
+  }
+}
   // article.controller.ts
 // Dans article.controller.ts
 

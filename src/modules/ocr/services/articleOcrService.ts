@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { createWorker, PSM, OEM } from 'tesseract.js';
+import { createWorker, OEM, PSM } from 'tesseract.js';
+
 
 @Injectable()
 export class ArticleOcrService {

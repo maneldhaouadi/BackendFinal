@@ -28,7 +28,6 @@ import { CurrencyController } from 'src/modules/currency/controllers/currency.co
 import { CurrencyModule } from 'src/modules/currency/currency.module';
 import { DefaultConditionController } from 'src/modules/default-condition/controllers/default-condition.controller';
 import { DefaultConditionModule } from 'src/modules/default-condition/default-condition.module';
-import { dialogflowModule } from 'src/modules/dialogflow-management/dialogflow-management.module';
 import { ExpenseInvoiceController } from 'src/modules/expense-invoice/controllers/expense-invoice.controller';
 import { ExpenseInvoiceModule } from 'src/modules/expense-invoice/expense-invoice.module';
 import { ExpensePaymentConditionController } from 'src/modules/expense-payment-condition/controllers/expense-payment-condition.controller';
@@ -37,7 +36,6 @@ import { ExpensePaymentController } from 'src/modules/expense-payment/controller
 import { ExpensePaymentModule } from 'src/modules/expense-payment/expense-payment.module';
 import { ExpensQuotationController } from 'src/modules/expense_quotation/controllers/expensquotation.controller';
 import { ExpenseQuotationModule } from 'src/modules/expense_quotation/expensquotation.module';
-import { FirmInterlocutorEntryController } from 'src/modules/firm-interlocutor-entry/controllers/firm-interlocutor-entry.controller.ts';
 import { FirmInterlocutorEntryModule } from 'src/modules/firm-interlocutor-entry/firm-interlocutor-entry.module';
 import { FirmController } from 'src/modules/firm/controllers/firm.controller';
 import { FirmModule } from 'src/modules/firm/firm.module';
@@ -65,6 +63,8 @@ import { TaxController } from 'src/modules/tax/controllers/tax.controller';
 import { TaxModule } from 'src/modules/tax/tax.module';
 import { UserController } from 'src/modules/user/controllers/user.controller';
 import { UsersModule } from 'src/modules/user/user.module';
+import { FirmInterlocutorEntryController } from 'src/modules/firm-interlocutor-entry/controllers/firm-interlocutor-entry.controller.ts';
+import { PdfModule } from 'src/modules/pdf-extraction/pdf.module';
 
 @Module({
   controllers: [
@@ -96,17 +96,10 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpensePaymentController,
     ExpensePaymentConditionController,
     ArticleHistoryController,
-<<<<<<< HEAD
     OcrController,
     CategoryController,
-    SubCategoryController
-=======
-    DialogflowController,
-    OcrController
->>>>>>> ca06f7fe36b1d189ca982184c7c99a680b450de4
-
-
-
+    SubCategoryController,
+    DialogflowController
   ],
   providers: [],
   exports: [],
@@ -140,17 +133,11 @@ import { UsersModule } from 'src/modules/user/user.module';
     ExpensePaymentModule,
     ExpensePaymentConditionModule,
     ArticleHistoryModule,
-<<<<<<< HEAD
     OcrModule,
-CategoryModule,
-SubCategoryModule
-=======
+    CategoryModule,
+    SubCategoryModule,
     DialogflowModule,
-    OcrModule
->>>>>>> ca06f7fe36b1d189ca982184c7c99a680b450de4
-
-
-
+    PdfModule
   ],
 })
 export class RoutesPublicModule {}

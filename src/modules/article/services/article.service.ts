@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import { TextSimilarityService } from './TextSimilarityService';
 import { ArticleData, ArticleOcrService } from 'src/modules/ocr/services/articleOcrService';
 import { createWorker } from 'tesseract.js';
+import { PdfExtractionService } from 'src/modules/pdf-extraction/services/pdf-extraction.service';
 
 @Injectable()
 export class ArticleService {
@@ -28,10 +29,116 @@ export class ArticleService {
     private readonly articleHistoryService: ArticleHistoryService,
     private readonly pdfService: PdfService,
     private readonly textSimilarityService: TextSimilarityService,
-    private readonly articleOcrService: ArticleOcrService
-
+    private readonly articleOcrService: ArticleOcrService,
+   
+    private readonly  pdfExtractionService:  PdfExtractionService,
 
   ) {}
+  //////////////////////////////////////pdf 
+
+  async createFromPdfData(pdfData: ArticleData): Promise<ArticleEntity> {
+    // Valider les données obligatoires
+    if (!pdfData.title || !pdfData.category) {
+      throw new BadRequestException('Le titre et la catégorie sont obligatoires');
+    }
+  
+    // Créer le DTO à partir des données PDF
+    const createArticleDto: CreateArticleDto = {
+      title: pdfData.title,
+      description: pdfData.description || '',
+      category: pdfData.category,
+      subCategory: pdfData.subCategory || '',
+      purchasePrice: pdfData.purchasePrice || 0,
+      salePrice: pdfData.salePrice || 0,
+      quantityInStock: pdfData.quantityInStock || 0,
+      status: pdfData.status || 'draft'
+    };
+  
+    // Vérifier si l'article existe déjà
+    const existingArticle = await this.articleRepository.findOne({
+      where: { title: createArticleDto.title }
+    });
+  
+    if (existingArticle) {
+      throw new BadRequestException('Un article avec ce titre existe déjà');
+    }
+  
+    // Créer et sauvegarder le nouvel article
+    return this.save(createArticleDto);
+  }
+
+
+  async comparePdfWithArticle(
+    articleId: number,
+    pdfPath: string
+  ): Promise<{
+    matches: Record<string, boolean>;
+    differences: Record<string, { articleValue: any; pdfValue: any }>;
+    similarityScore: number;
+  }> {
+    try {
+      // 1. Récupérer l'article existant
+      const article = await this.findOneById(articleId);
+      
+      // 2. Extraire les données du PDF
+      const pdfData = await this.pdfExtractionService.extractArticleDataFromPdf(pdfPath);
+      
+      // 3. Comparer les champs
+      const fieldsToCompare = [
+        'title', 'description', 'category', 'subCategory',
+        'purchasePrice', 'salePrice', 'quantityInStock', 'status'
+      ];
+      
+      const matches: Record<string, boolean> = {};
+      const differences: Record<string, { articleValue: any; pdfValue: any }> = {};
+      let matchingFields = 0;
+  
+      fieldsToCompare.forEach(field => {
+        const articleValue = article[field];
+        const pdfValue = pdfData[field];
+  
+        // Conversion pour les champs numériques
+        if (field.includes('Price') || field === 'quantityInStock') {
+          const numPdfValue = typeof pdfValue === 'string' ? 
+            parseFloat(pdfValue.replace(',', '.')) : 
+            Number(pdfValue);
+          
+          const numArticleValue = Number(articleValue);
+          
+          matches[field] = Math.abs(numArticleValue - numPdfValue) < 0.01;
+        } else {
+          // Comparaison de texte (insensible à la casse et aux espaces)
+          const normalizedArticle = String(articleValue || '').trim().toLowerCase();
+          const normalizedPdf = String(pdfValue || '').trim().toLowerCase();
+          matches[field] = normalizedArticle === normalizedPdf;
+        }
+  
+        if (!matches[field]) {
+          differences[field] = {
+            articleValue: article[field],
+            pdfValue: pdfData[field]
+          };
+        } else {
+          matchingFields++;
+        }
+      });
+  
+      // Calcul du score de similarité (en pourcentage)
+      const similarityScore = (matchingFields / fieldsToCompare.length) * 100;
+  
+      return {
+        matches,
+        differences,
+        similarityScore: Math.round(similarityScore * 100) / 100 // Arrondi à 2 décimales
+      };
+    } catch (error) {
+      throw new Error(`Erreur lors de la comparaison: ${error.message}`);
+    }
+  }
+
+
+
+  ///////////////
 
   //ocr part 
 
@@ -42,6 +149,7 @@ async createFromOcrData(ocrData: ArticleData): Promise<ArticleEntity> {
   if (!ocrData.title || !ocrData.category) {
     throw new BadRequestException('Le titre et la catégorie sont obligatoires');
   }
+  
 
   // Créer le DTO à partir des données OCR
   const createArticleDto: CreateArticleDto = {
