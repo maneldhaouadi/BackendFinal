@@ -740,44 +740,7 @@ public async getLateInvoices(
   }
 }
 
-@Post('dialogflow-webhook')
-async handleDialogflowWebhook(@Body() body: any) {
-  const session = body.session;
-  const sessionId = session.split('/').pop();
-  const params = body.queryResult?.parameters || {};
-  const contexts = body.queryResult?.outputContexts || [];
 
-  // Vérifier l'intention
-  if (body.queryResult?.intent?.displayName === 'predict.late.payments') {
-    return this.dialogflowService.handleLatePaymentsInquiry(
-      sessionId,
-      params,
-      contexts
-    );
-  }
-
-  // Gérer les réponses aux questions de paramètres
-  const awaitingContext = contexts.find(c => 
-    c.name.includes('awaiting_') && 
-    c.lifespanCount && 
-    c.lifespanCount > 0
-  );
-
-  if (awaitingContext) {
-    const paramName = awaitingContext.name.split('awaiting_')[1].split('/')[0];
-    const paramValue = params[paramName] || body.queryResult?.queryText;
-    
-    return this.dialogflowService.handleParamCollection(
-      sessionId,
-      paramName,
-      paramValue,
-      contexts,
-      awaitingContext.parameters
-    );
-  }
-
-  return this.handleDefaultResponse(body.queryResult?.queryText || '', sessionId);
-}
 
 
 private handleDefaultResponse(queryText: string, sessionId: string) {

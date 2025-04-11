@@ -96,10 +96,8 @@ import { PdfModule } from 'src/modules/pdf-extraction/pdf.module';
     ExpensePaymentController,
     ExpensePaymentConditionController,
     ArticleHistoryController,
-    OcrController,
-    CategoryController,
-    SubCategoryController,
-    DialogflowController
+    DialogflowController,
+    OcrController
   ],
   providers: [],
   exports: [],
@@ -133,11 +131,11 @@ import { PdfModule } from 'src/modules/pdf-extraction/pdf.module';
     ExpensePaymentModule,
     ExpensePaymentConditionModule,
     ArticleHistoryModule,
-    OcrModule,
-    CategoryModule,
-    SubCategoryModule,
     DialogflowModule,
-    PdfModule
+    OcrModule
+
+
+
   ],
 })
 export class RoutesPublicModule {}
