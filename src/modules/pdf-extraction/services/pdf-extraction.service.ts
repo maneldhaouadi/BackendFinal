@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { ArticleData } from 'src/modules/ocr/services/articleOcrService';
 
+
 @Injectable()
 export class PdfExtractionService {
   private pdfjs: any;
@@ -88,6 +89,76 @@ export class PdfExtractionService {
       throw new Error(`Fichier PDF invalide: ${error.message}`);
     }
   }
+
+  ////////////////////////////////////
+  //traduction
+
+  
+  /*
+  async extractAndTranslatePdf(
+    pdfPath: string,
+    targetLang: string = 'en'
+  ): Promise<{ original: ArticleData; translated: ArticleData; translatedPdf: Buffer }> {
+    // 1. Extraire les données originales
+    const originalData = await this.extractArticleDataFromPdf(pdfPath);
+  
+    // 2. Traduire les champs textuels
+    const translatedData: ArticleData = {
+      ...originalData,
+      title: await this.translateText(originalData.title, targetLang),
+      description: await this.translateText(originalData.description, targetLang),
+      category: await this.translateText(originalData.category, targetLang),
+      subCategory: await this.translateText(originalData.subCategory, targetLang),
+    };
+  
+    // 3. Recréer un PDF avec les données traduites
+    const translatedPdf = await this.generateTranslatedPdf(translatedData);
+  
+    return {
+      original: originalData,
+      translated: translatedData,
+      translatedPdf
+    };
+  }
+  
+  private async translateText(text: string, targetLang: string): Promise<string> {
+    if (!text) return text;
+    
+    try {
+      // Utilisation de l'API MyMemory (gratuite)
+      const response = await axios.get(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=auto|${targetLang}`
+      );
+      return response.data.responseData.translatedText || text;
+    } catch (error) {
+      console.error('Erreur de traduction:', error);
+      return text; // Retourne le texte original en cas d'erreur
+    }
+  }
+  
+  private async generateTranslatedPdf(data: ArticleData): Promise<Buffer> {
+    const pdfDoc = await PDFDocument.create();
+    const page = pdfDoc.addPage([600, 800]);
+    
+    const { height } = page.getSize();
+    let yPosition = height - 50;
+  
+    // Ajout des données traduites au PDF
+    const addText = (text: string, size = 12) => {
+      page.drawText(text, { x: 50, y: yPosition, size });
+      yPosition -= size + 10;
+    };
+  
+    addText(`Titre: ${data.title}`, 14);
+    addText(`Description: ${data.description}`);
+    addText(`Catégorie: ${data.category}`);
+    addText(`Sous-catégorie: ${data.subCategory}`);
+    addText(`Prix d'achat: ${data.purchasePrice} €`);
+    addText(`Prix de vente: ${data.salePrice} €`);
+    addText(`Stock: ${data.quantityInStock}`);
+  
+    return Buffer.from(await pdfDoc.save());
+  }*/
 
   
 }

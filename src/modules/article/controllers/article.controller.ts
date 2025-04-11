@@ -51,42 +51,83 @@ export class ArticleController {
   /////////////////////////////pdf extraction 
 // Dans le ArticleController
 // Dans le ArticleController@Post('upload-pdf')
-
-@Post('upload-pdf')
-@UseInterceptors(FileInterceptor('file', multerOptions)) // Utilisez la configuration
+@Post('extract-from-pdf')
+@UseInterceptors(FileInterceptor('file', multerOptions))
 @ApiConsumes('multipart/form-data')
-async uploadPdf(
+async extractFromPdf(
   @UploadedFile() file: Express.Multer.File
-) {
+): Promise<CreateArticleDto> {
   if (!file) {
-    throw new BadRequestException('No file uploaded');
+    throw new BadRequestException('Aucun fichier PDF fourni');
   }
 
-  console.log('File received:', {
-    originalname: file.originalname,
-    path: file.path, // Maintenant garanti d'être défini
-    size: file.size,
-    mimetype: file.mimetype
-  });
-
   try {
-    // Solution 1: Utilisation du fichier temporaire
+    console.log('Début de l\'extraction du PDF...');
     const result = await this.pdfExtractionService.extractArticleDataFromPdf(file.path);
     
-    // Solution alternative: Utilisation directe du buffer
-    // const result = await this.pdfService.extractFromBuffer(file.buffer);
+    console.log('Données extraites:', result);
     
-    return result;
+    if (!result) {
+      throw new Error("Aucune donnée extraite du PDF");
+    }
+
+    // Retourner un objet bien formé
+    return {
+      title: result.title || 'nn',
+      description: result.description || 'nn',
+      category: result.category || 'pp',
+      subCategory: result.subCategory || 'pp--',
+      purchasePrice: result.purchasePrice || 0,
+      salePrice: result.salePrice || 0,
+      quantityInStock: result.quantityInStock || 0,
+      status: result.status || 'active'
+    };
   } catch (error) {
-    throw new BadRequestException(`PDF processing failed: ${error.message}`);
+    console.error('Erreur d\'extraction:', error);
+    throw new BadRequestException(`Erreur d'extraction: ${error.message}`);
   } finally {
-    // Nettoyage garantie
     if (file?.path && fs.existsSync(file.path)) {
       fs.unlinkSync(file.path);
     }
   }
 }
 
+/////////////////////traduit pdf :
+/*
+@Post('translate-pdf')
+@UseInterceptors(FileInterceptor('file', multerOptions))
+@ApiConsumes('multipart/form-data')
+@ApiOperation({ summary: 'Extraire, traduire et régénérer un PDF' })
+async translatePdf(
+  @UploadedFile() file: Express.Multer.File,
+  @Query('lang') targetLang: string = 'en'
+) {
+  if (!file) {
+    throw new BadRequestException('Aucun fichier PDF fourni');
+  }
+
+  try {
+    const { original, translated, translatedPdf } = 
+      await this.pdfExtractionService.extractAndTranslatePdf(file.path, targetLang);
+
+    return {
+      original,
+      translated,
+      pdfBase64: translatedPdf.toString('base64')
+    };
+  } catch (error) {
+    throw new BadRequestException(`Échec de la traduction: ${error.message}`);
+  } finally {
+    // Nettoyage avec gestion d'erreur propre
+    if (file?.path) {
+      try {
+        await fs.promises.unlink(file.path); // Utilisez la version Promise
+      } catch (cleanupError) {
+        console.error('Erreur lors du nettoyage du fichier:', cleanupError);
+      }
+    }
+  }
+}*/
 
 
   /////////////////////////
@@ -125,8 +166,6 @@ async uploadPdf(
       }
     }
   }
-
-
   
 
   @Post(':id/compare-with-pdf')
