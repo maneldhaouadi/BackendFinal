@@ -41,9 +41,9 @@ import { multerOptions } from 'src/configs/multer.config';
 export class ArticleController {
   constructor(
     private readonly articleService: ArticleService,
-    private readonly articleHistoryService: ArticleHistoryService,
     private readonly articleOcrService: ArticleOcrService,
-    private readonly pdfExtractionService: PdfExtractionService // Ajoutez cette ligne
+    private readonly pdfExtractionService: PdfExtractionService, // Ajoutez cette ligne
+    private readonly articleHistoryService: ArticleHistoryService,
 
   ) {}
 

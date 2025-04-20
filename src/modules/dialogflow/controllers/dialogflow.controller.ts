@@ -252,59 +252,108 @@ export class DialogflowController {
                     quotationData 
                 });
                 case 'articleid':
-    console.log('Article ID step - raw parameters:', JSON.stringify(request.parameters, null, 2));
-    
-    // Extraction robuste de l'ID d'article
-    const articleId = this.extractNumberFromParams(request.parameters, 'articleId');
+    console.log('Article ID step - raw input:', JSON.stringify({
+        parameters: request.parameters,
+        queryText: request.queryText,
+        contexts: request.outputContexts
+    }, null, 2));
+
+    // Extraction ultra-robuste de l'ID
+    const articleId = this.extractArticleId(request);
     console.log('Extracted article ID:', articleId);
-    
-    if (articleId === null || isNaN(articleId)) {
-        return this.promptForInput(request, 
+
+    if (!articleId || isNaN(articleId)) {
+        return this.promptForInput(request,
             languageCode === 'fr' 
-                ? "Veuillez entrer un ID d'article valide (nombre entier)" 
-                : "Please enter a valid article ID (integer)");
+                ? "ID d'article invalide. Veuillez entrer uniquement le numéro (ex: '135')." 
+                : "Invalid article ID. Please enter just the number (ex: '135').");
     }
-    
-    // Vérifiez que l'article existe
-    const articleExists = await this.dialogflowService.getArticleInfo(articleId);
-    if (!articleExists) {
-        return this.promptForInput(request, 
-            languageCode === 'fr' 
-                ? `Article avec ID ${articleId} introuvable. Veuillez entrer un ID valide.`
-                : `Article with ID ${articleId} not found. Please enter a valid ID.`);
+
+    // Vérification de l'article avec gestion d'erreur
+    try {
+        const articleInfo = await this.dialogflowService.getArticleInfo(articleId);
+        if (!articleInfo) {
+            return this.promptForInput(request,
+                languageCode === 'fr'
+                    ? `Article #${articleId} introuvable. Veuillez vérifier l'ID.`
+                    : `Article #${articleId} not found. Please check the ID.`);
+        }
+
+        // Initialisation avec vérification de null
+        quotationData.currentArticle = {
+            articleId: articleId,
+            quantity: 1,
+            unit_price: articleInfo.salePrice,
+            discount: 0,
+            discount_type: DISCOUNT_TYPES.PERCENTAGE,
+            articleName: articleInfo.title // Pour référence ultérieure
+        };
+
+        return this.nextStep(request, 'quantity',
+            languageCode === 'fr'
+                ? `Article "${articleInfo.title}" (ID: ${articleId}) sélectionné. Quantité souhaitée ?`
+                : `Article "${articleInfo.title}" (ID: ${articleId}) selected. Desired quantity?`,
+            { 
+                quotationData,
+                // Conservation des infos importantes
+                lastArticleId: articleId 
+            });
+
+    } catch (error) {
+        console.error('Article verification failed:', error);
+        return this.promptForInput(request,
+            languageCode === 'fr'
+                ? "Erreur technique lors de la vérification de l'article. Veuillez réessayer."
+                : "Technical error verifying article. Please try again.");
     }
-    
-    // Initialisation garantie de currentArticle
-    quotationData.currentArticle = quotationData.currentArticle || {
-        articleId: null,
-        quantity: 1,
-        unit_price: null,
-        discount: 0,
-        discount_type: DISCOUNT_TYPES.PERCENTAGE
+
+case 'quantity':
+    console.log('Quantity step - raw input:', JSON.stringify({
+        parameters: request.parameters,
+        queryText: request.queryText,
+        currentArticle: quotationData.currentArticle
+    }, null, 2));
+
+    // Vérification préalable de l'article
+    if (!quotationData.currentArticle?.articleId) {
+        console.error('No article selected before quantity input');
+        return this.nextStep(request, 'articleId',
+            languageCode === 'fr'
+                ? "Veuillez d'abord sélectionner un article."
+                : "Please select an article first.");
+    }
+
+    // Extraction robuste avec plages valides
+    const quantity = this.extractValidQuantity(request);
+    console.log('Validated quantity:', quantity);
+
+    if (quantity === null) {
+        return this.promptForInput(request,
+            languageCode === 'fr'
+                ? "Quantité invalide. Veuillez entrer un nombre entier entre 1 et 1000."
+                : "Invalid quantity. Please enter an integer between 1 and 1000.");
+    }
+
+    // Mise à jour garantie avec opérateur de coalescence null
+    quotationData.currentArticle = {
+        ...(quotationData.currentArticle || {}),
+        quantity: quantity
     };
-    quotationData.currentArticle.articleId = articleId;
-    
-    return this.nextStep(request, 'quantity', 
-        languageCode === 'fr' 
-            ? "Entrez la quantité (nombre entier)" 
-            : "Enter the quantity (integer)", 
-        { quotationData });
-  
-              case 'quantity':
-                  const quantity = this.extractNumberFromParams(request.parameters, 'quantity');
-                  if (quantity === null || isNaN(quantity)) {
-                      return this.promptForInput(request, "Veuillez entrer une quantité valide (nombre entier)");
-                  }
-                  
-                  // Vérification et initialisation de currentArticle
-                  if (!quotationData.currentArticle) {
-                      quotationData.currentArticle = {};
-                  }
-                  quotationData.currentArticle.quantity = quantity;
-                  
-                  return this.nextStep(request, 'unitPrice', "Entrez le prix unitaire (nombre décimal ou 'défaut')", { 
-                      quotationData 
-                  });
+
+    // Message contextuel
+    const articleReference = quotationData.currentArticle.articleName 
+        ? `"${quotationData.currentArticle.articleName}"` 
+        : `#${quotationData.currentArticle.articleId}`;
+
+    return this.nextStep(request, 'unitPrice',
+        languageCode === 'fr'
+            ? `${quantity} unité(s) ${articleReference}. Prix unitaire (ou "défaut") ?`
+            : `${quantity} unit(s) ${articleReference}. Unit price (or "default")?`,
+        { 
+            quotationData,
+            // Pour traçabilité
+            lastQuantity: quantity 
+        });
   
                   case 'unitprice':
                     case 'unitPrice': // Gestion des deux cas possibles
@@ -525,32 +574,40 @@ private promptForInput(request: any, message: string) {
 }
 
 private extractNumberFromParams(parameters: any, paramName: string): number | null {
-  if (!parameters) return null;
+  // Essayer différentes variantes de noms de paramètres
+  const paramVariations = [
+      paramName.toLowerCase(), // articleid
+      paramName, // articleId
+      paramName.charAt(0).toUpperCase() + paramName.slice(1) // ArticleId
+  ];
 
-  // Essayer plusieurs formats de paramètres
-  let value;
-  
-  // Cas 1: Paramètre dans parameters.fields (format Dialogflow v2)
-  if (parameters.fields && parameters.fields[paramName]) {
-      value = parameters.fields[paramName].numberValue ?? 
-              parameters.fields[paramName].stringValue;
+  for (const variation of paramVariations) {
+      // Essayer dans fields
+      if (parameters?.fields?.[variation]?.numberValue) {
+          return parameters.fields[variation].numberValue;
+      }
+      if (parameters?.fields?.[variation]?.stringValue) {
+          const num = parseInt(parameters.fields[variation].stringValue);
+          if (!isNaN(num)) return num;
+      }
+      
+      // Essayer directement dans les paramètres
+      if (parameters?.[variation]?.numberValue) {
+          return parameters[variation].numberValue;
+      }
+      if (parameters?.[variation]?.stringValue) {
+          const num = parseInt(parameters[variation].stringValue);
+          if (!isNaN(num)) return num;
+      }
   }
-  // Cas 2: Paramètre directement dans parameters (format Dialogflow v1)
-  else if (parameters[paramName] !== undefined) {
-      value = parameters[paramName].numberValue ?? 
-              parameters[paramName].stringValue ??
-              parameters[paramName];
+
+  // Essayer de parser depuis queryText si tout le reste échoue
+  if (parameters?.queryText?.stringValue) {
+      const num = parseInt(parameters.queryText.stringValue);
+      if (!isNaN(num)) return num;
   }
 
-  // Si aucune valeur trouvée
-  if (value === undefined || value === null) return null;
-
-  // Si c'est déjà un nombre
-  if (typeof value === 'number') return value;
-
-  // Si c'est une chaîne, essayez de la convertir
-  const num = Number(value);
-  return isNaN(num) ? null : num;
+  return null;
 }
 
   private mapStatus(status: string): EXPENSQUOTATION_STATUS {
@@ -714,7 +771,7 @@ public async getLateInvoices(
     );
 
     if (!result.success) {
-      throw new Error(result.error);
+      
     }
 
     // Formater la réponse
@@ -739,18 +796,73 @@ public async getLateInvoices(
     };
   }
 }
+private extractArticleId(request: any): number | null {
+  // 1. Vérifier d'abord dans les paramètres standards
+  const standardParam = request.parameters?.fields?.articleId?.numberValue 
+                     || request.parameters?.fields?.articleid?.numberValue
+                     || request.parameters?.articleId?.numberValue
+                     || request.parameters?.articleid?.numberValue;
+  
+  if (standardParam) return standardParam;
 
+  // 2. Vérifier dans les stringValue
+  const stringParam = request.parameters?.fields?.articleId?.stringValue 
+                    || request.parameters?.fields?.articleid?.stringValue
+                    || request.parameters?.articleId?.stringValue
+                    || request.parameters?.articleid?.stringValue;
+  
+  if (stringParam) {
+      const num = parseInt(stringParam);
+      if (!isNaN(num)) return num;
+  }
 
+  // 3. Extraire de queryText (méthode ultime)
+  if (request.queryText) {
+      // Supprimer tous les caractères non numériques
+      const numericOnly = request.queryText.replace(/\D/g, '');
+      if (numericOnly) {
+          return parseInt(numericOnly);
+      }
+  }
 
+  return null;
+}
+private extractValidQuantity(request: any): number | null {
+  const MIN_QTY = 1;
+  const MAX_QTY = 1000;
 
-private handleDefaultResponse(queryText: string, sessionId: string) {
-  // Logique pour les requêtes sans intent clair
-  return {
-    fulfillmentText: "Je n'ai pas compris votre demande. Essayez de reformuler.",
-    outputContexts: [{
-      name: `${sessionId}/contexts/fallback`,
-      lifespanCount: 1
-    }]
-  };
+  // 1. Essayez d'abord d'extraire depuis queryText directement
+  const queryTextValue = parseInt(request.queryText);
+  if (!isNaN(queryTextValue)) {
+      if (queryTextValue >= MIN_QTY && queryTextValue <= MAX_QTY) {
+          return queryTextValue;
+      }
+      return null;
+  }
+
+  // 2. Essayez depuis les paramètres
+  const paramsValue = this.extractNumberFromParams(request.parameters, 'quantity');
+  if (paramsValue !== null) {
+      if (paramsValue >= MIN_QTY && paramsValue <= MAX_QTY) {
+          return paramsValue;
+      }
+      return null;
+  }
+
+  // 3. Essayez depuis le champ quantity directement
+  if (request.parameters?.quantity?.numberValue) {
+      const qty = request.parameters.quantity.numberValue;
+      if (qty >= MIN_QTY && qty <= MAX_QTY) {
+          return qty;
+      }
+  }
+
+  // 4. Si tout échoue, essayez de parser le texte brut
+  const textValue = parseInt(request.queryText?.replace(/\D/g, ''));
+  if (!isNaN(textValue) && textValue >= MIN_QTY && textValue <= MAX_QTY) {
+      return textValue;
+  }
+
+  return null;
 }
 }

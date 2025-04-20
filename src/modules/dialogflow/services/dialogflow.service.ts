@@ -15,6 +15,8 @@ import { ExpenseArticleQuotationEntryRepository } from 'src/modules/expense_quot
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
 import { FirmRepository } from 'src/modules/firm/repositories/repository/firm.repository';
 import { PAYMENT_MODE } from 'src/modules/expense-payment/enums/expense-payment-mode.enum';
+import { HistoryRepository } from '../repositories/repository/HistoryRepository';
+import { HistoryEntry } from '../interfaces/history_entry.interface';
 
 
 @Injectable()
@@ -34,6 +36,7 @@ export class DialogflowService {
     private readonly articleEntryRepository: ExpenseArticleQuotationEntryRepository,
     private readonly dataSource: DataSource,
     private readonly firmRepository:FirmRepository,
+    private readonly historyRepository: HistoryRepository,
 
   ) {
     const filePath = 'src/projetadopet-9d2f2-7bd0022ebee4.json';
@@ -131,20 +134,47 @@ export class DialogflowService {
       sessionId
     );
   
-    // 1. D'abord vérifier les numéros de documents
+    // Charger l'historique existant
+    const existingHistory = await this.historyRepository.getFullHistory(sessionId);    
+    // Vérifier si c'est une demande d'historique
+    const isHistoryRequest = 
+    queryText.toLowerCase().includes('history') || 
+    queryText.toLowerCase().includes('historique') ||
+    queryText.toLowerCase().includes('previous conversations') ||
+    queryText.toLowerCase().includes('conversations précédentes');  if (isHistoryRequest) {
+      const history = await this.getHistory(sessionId);
+      const response = {
+        fulfillmentText: history || t('noHistoryAvailable'),
+        intent: 'show_history',
+        allRequiredParamsPresent: true,
+        outputContexts: parameters?.outputContexts || []
+      };
+      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+      return response;
+    }
+  
+    // Traitement des numéros de documents
     const invoiceNumber = this.extractInvoiceNumber(queryText);
     const quotationNumber = this.extractQuotationNumber(queryText);
   
-    // 2. Traitement personnalisé pour les documents
     if (invoiceNumber) {
-      return this.handleInvoiceStatus(invoiceNumber, lang, sessionId);
+      const response = await this.handleInvoiceStatus(invoiceNumber, lang, sessionId);
+      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+      return response;
     }
   
     if (quotationNumber) {
-      return this.handleQuotationStatus(quotationNumber, lang, sessionId);
+      const response = await this.handleQuotationStatus(quotationNumber, lang, sessionId);
+      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+      return response;
     }
   
-    // 3. Fallback à Dialogflow
+    // Préparation de la requête Dialogflow avec l'historique
+    const historyContent = existingHistory.entries.length > 0 
+    ? existingHistory.entries
+      .map(e => `User: ${e.user}\nBot: ${e.bot}`)
+      .join('\n\n')
+    : '';
     const request = {
       session: sessionPath,
       queryInput: {
@@ -154,7 +184,14 @@ export class DialogflowService {
         }
       },
       queryParams: {
-        contexts: parameters?.outputContexts || []
+        contexts: parameters?.outputContexts || [],
+        payload: {
+          fields: {
+            conversation_history: {
+              stringValue: historyContent
+            }
+          }
+        }
       }
     };
   
@@ -162,11 +199,14 @@ export class DialogflowService {
       const responses = await this.sessionClient.detectIntent(request);
       const result = responses[0].queryResult;
   
-      // MODIFICATION IMPORTANTE: Traiter d'abord AddQuotationArticle
-      if (result.intent?.displayName === 'AddQuotationArticle' && 
-        result.allRequiredParamsPresent) {
+      const saveAndReturn = async (response: any) => {
+        await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+        return response;
+      };
+  
+      // Traitement AddQuotationArticle
+      if (result.intent?.displayName === 'AddQuotationArticle' && result.allRequiredParamsPresent) {
         const params = result.parameters.fields;
-        
         const discountType = params.discountType?.stringValue?.toUpperCase() === 'AMMOUNT' 
           ? DISCOUNT_TYPES.AMOUNT 
           : DISCOUNT_TYPES.PERCENTAGE;
@@ -180,138 +220,201 @@ export class DialogflowService {
           unit_price: params.unitPrice?.numberValue
         }, lang);
   
-        return {
+        return await saveAndReturn({
           fulfillmentText: addResult.message,
           intent: result.intent.displayName,
           parameters: result.parameters,
           outputContexts: result.outputContexts,
           allRequiredParamsPresent: true
-        };
+        });
       }
   
-      // Ensuite traiter CreateQuotation
-      if (result.intent?.displayName === 'CreateQuotation' && 
-        result.allRequiredParamsPresent) {
-        const params = result.parameters.fields;
-        
-        const parseDialogflowDate = (dateParam: any): Date | undefined => {
-          if (!dateParam) return undefined;
-          
-          if (dateParam.structValue) {
-            const dateObj = dateParam.structValue.fields;
-            return new Date(
-              dateObj.year.numberValue,
-              dateObj.month.numberValue - 1,
-              dateObj.day.numberValue
-            );
-          }
-          return dateParam.stringValue ? new Date(dateParam.stringValue) : undefined;
-        };
-        
-        const articles = [];
-        if (params.articleId) {
-          articles.push({
-            articleId: params.articleId.numberValue,
-            quantity: params.quantity?.numberValue || 1,
-            discount: params.discount?.numberValue,
-            discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE
-          });
-        }
-  
-        const creationResult = await this.createQuotation({
-          firmName: params.firmName.stringValue,
-          cabinetId: params.cabinetId?.numberValue || 1,
-          interlocutorName: params.interlocutorName.stringValue,
-          currencyId: params.currencyId?.numberValue,
-          object: params.object?.stringValue,
-          sequentialNumbr: params.sequentialNumbr?.stringValue,
-          articles: articles,
-          status: this.mapStatusStringToEnum(params.status?.stringValue),
-          dueDate: parseDialogflowDate(params.duedate),
-          date: parseDialogflowDate(params.date)
-        }, lang);
+      // Traitement CreateQuotation
+      if (result.intent?.displayName === 'CreateQuotation' && result.allRequiredParamsPresent) {
+        try {
+            const params = result.parameters.fields;
+            
+            // Debug: Afficher les paramètres reçus
+            console.log('Raw parameters:', JSON.stringify(params, null, 2));
     
-        return {
-          fulfillmentText: creationResult.message,
-          intent: result.intent.displayName,
-          parameters: result.parameters,
-          outputContexts: result.outputContexts,
-          allRequiredParamsPresent: true
-        };
-      }
+            const parseDialogflowDate = (dateParam: any): Date | undefined => {
+                if (!dateParam) return undefined;
+                if (dateParam.structValue) {
+                    const dateObj = dateParam.structValue.fields;
+                    return new Date(
+                        dateObj.year.numberValue,
+                        dateObj.month.numberValue - 1,
+                        dateObj.day.numberValue
+                    );
+                }
+                return dateParam.stringValue ? new Date(dateParam.stringValue) : undefined;
+            };
+    
+            // Nouvelle méthode pour extraire l'ID de l'article
+            const extractArticleId = (params: any): number | null => {
+                // Essayer d'abord le champ articleId
+                if (params.articleId?.numberValue) {
+                    return params.articleId.numberValue;
+                }
+                
+                // Si non trouvé, essayer de parser depuis queryText
+                if (params.queryText?.stringValue) {
+                    const articleId = parseInt(params.queryText.stringValue);
+                    if (!isNaN(articleId)) {
+                        return articleId;
+                    }
+                }
+                
+                return null;
+            };
+    
+            const articles = [];
+            const articleId = extractArticleId(params);
+            
+            if (articleId !== null) {
+                const articleInfo = await this.getArticleInfo(articleId, lang);
+                if (!articleInfo) {
+                    throw new Error(t.articleNotFound.replace('{{id}}', articleId.toString()));
+                }
+    
+                articles.push({
+                    articleId: articleId,
+                    quantity: params.quantity?.numberValue || 1,
+                    discount: params.discount?.numberValue || 0,
+                    discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE,
+                    unit_price: articleInfo.salePrice
+                });
+            } else {
+                throw new Error(t.missingArticleId);
+            }
+    
+            // Reste du code inchangé...
+            const creationResult = await this.createQuotation({
+                firmName: params.firmName.stringValue,
+                cabinetId: params.cabinetId?.numberValue || 1,
+                interlocutorName: params.interlocutorName.stringValue,
+                currencyId: params.currencyId?.numberValue,
+                object: params.object?.stringValue || `${t.quotation} ${new Date().toLocaleDateString(lang)}`,
+                sequentialNumbr: params.sequentialNumbr?.stringValue,
+                articles: articles,
+                status: this.mapStatusStringToEnum(params.status?.stringValue),
+                dueDate: parseDialogflowDate(params.duedate),
+                date: parseDialogflowDate(params.date) || new Date()
+            }, lang, sessionId, queryText);
+    
+            return await saveAndReturn({
+                fulfillmentText: creationResult.message,
+                intent: result.intent.displayName,
+                parameters: result.parameters,
+                outputContexts: result.outputContexts,
+                allRequiredParamsPresent: true,
+                metadata: {
+                    quotationNumber: creationResult.quotationNumber,
+                    totalAmount: creationResult.total
+                }
+            });
+    
+        } catch (error) {
+            console.error('Error in CreateQuotation intent:', error);
+            await this.saveToHistory(
+                sessionId, 
+                queryText, 
+                `${t.creationError}: ${error.message}`
+            );
+            return {
+                fulfillmentText: `${t.creationError}: ${error.message}`,
+                intent: result.intent?.displayName,
+                parameters: result.parameters,
+                outputContexts: result.outputContexts || [],
+                allRequiredParamsPresent: false
+            };
+        }
+    }
   
-      // Traitement des autres intents
-      if (result.intent?.displayName === 'FAQ_Invoice' && 
-          result.parameters.fields.invoice_number?.stringValue) {
-        return this.handleInvoiceStatus(
+      // Traitement FAQ_Invoice
+      if (result.intent?.displayName === 'FAQ_Invoice' && result.parameters.fields.invoice_number?.stringValue) {
+        const response = await this.handleInvoiceStatus(
           result.parameters.fields.invoice_number.stringValue, 
           lang, 
           sessionId
         );
+        await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+        return response;
       }
   
-      if (result.intent?.displayName === 'FAQ_Quotation' && 
-          result.parameters.fields.quotation_number?.stringValue) {
-        return this.handleQuotationStatus(
+      // Traitement FAQ_Quotation
+      if (result.intent?.displayName === 'FAQ_Quotation' && result.parameters.fields.quotation_number?.stringValue) {
+        const response = await this.handleQuotationStatus(
           result.parameters.fields.quotation_number.stringValue, 
           lang, 
           sessionId
         );
+        await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+        return response;
       }
   
-      // AJOUT: Traitement du nouvel Intent FAQ_Invoice_Payments
-      if (result.intent?.displayName === 'FAQ_Invoice_Payments' && 
-          result.parameters.fields.sequentialNumbr?.stringValue) {
+      // Traitement FAQ_Invoice_Payments
+      if (result.intent?.displayName === 'FAQ_Invoice_Payments' && result.parameters.fields.sequentialNumbr?.stringValue) {
         const payments = await this.getInvoicePayments(
           result.parameters.fields.sequentialNumbr.stringValue, 
           lang
         );
         
+        let responseText;
         if (!payments.success) {
-          return { fulfillmentText: payments.message };
+          responseText = payments.message;
+        } else {
+          responseText = lang === 'en' 
+            ? `Payments for invoice ${payments.invoiceNumber}:\n`
+            : `Paiements pour la facture ${payments.invoiceNumber}:\n`;
+            
+          payments.payments.forEach(p => {
+            responseText += `- ${p.amount} ${payments.currency} (${p.mode}) ${lang === 'en' ? 'on' : 'le'} ${new Date(p.date).toLocaleDateString(lang)}\n`;
+          });
+          
+          responseText += lang === 'en'
+            ? `\nInvoice total: ${payments.total} ${payments.currency}\n`
+            : `\nTotal facture: ${payments.total} ${payments.currency}\n`;
+          responseText += lang === 'en'
+            ? `Amount paid: ${payments.paidAmount} ${payments.currency}\n`
+            : `Montant payé: ${payments.paidAmount} ${payments.currency}\n`;
+          responseText += lang === 'en'
+            ? `Remaining: ${payments.remainingAmount} ${payments.currency}`
+            : `Reste à payer: ${payments.remainingAmount} ${payments.currency}`;
         }
-        
-        let responseText = lang === 'en' 
-          ? `Paiements pour la facture ${payments.invoiceNumber}:\n`
-          : `Payments for invoice ${payments.invoiceNumber}:\n`;
-          
-        payments.payments.forEach(p => {
-          responseText += `- ${p.amount} ${payments.currency} (${p.mode}) ${lang === 'en' ? 'le' : 'on'} ${new Date(p.date).toLocaleDateString(lang)}\n`;
-        });
-        
-        responseText += lang === 'en'
-          ? `\nTotal facture: ${payments.total} ${payments.currency}\n`
-          : `\nInvoice total: ${payments.total} ${payments.currency}\n`;
-        responseText += lang === 'en'
-          ? `Montant payé: ${payments.paidAmount} ${payments.currency}\n`
-          : `Amount paid: ${payments.paidAmount} ${payments.currency}\n`;
-        responseText += lang === 'en'
-          ? `Reste à payer: ${payments.remainingAmount} ${payments.currency}`
-          : `Remaining: ${payments.remainingAmount} ${payments.currency}`;
-          
-        return { 
+  
+        const response = {
           fulfillmentText: responseText,
           intent: result.intent.displayName,
           parameters: result.parameters,
           outputContexts: result.outputContexts,
           allRequiredParamsPresent: true
         };
+        
+        await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+        return response;
       }
   
       // Réponse par défaut
-      return {
+      const response = {
         fulfillmentText: result.fulfillmentText,
         intent: result.intent?.displayName,
         parameters: result.parameters,
         outputContexts: result.outputContexts,
         allRequiredParamsPresent: result.allRequiredParamsPresent
       };
+      
+      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+      return response;
+  
     } catch (error) {
       console.error('Dialogflow error:', error);
-      return {
+      const response = {
         fulfillmentText: t.error,
         outputContexts: []
       };
+      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+      return response;
     }
   }
 
@@ -447,50 +550,61 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
     return null;
   }
 }
-  private async handleQuotationStatus(
-    quotationNumber: string,
-    lang: string,
-    sessionId: string
-  ): Promise<any> {
-    const t = this.getTranslation(lang);
+private async handleQuotationStatus(
+  quotationNumber: string,
+  lang: string,
+  sessionId: string
+): Promise<any> {
+  const t = this.getTranslation(lang);
+  
+  try {
+    const quotationStatus = await this.getQuotationStatus(quotationNumber);
     
-    try {
-      const quotationStatus = await this.getQuotationStatus(quotationNumber);
-      
-      if (!quotationStatus) {
-        return {
-          fulfillmentText: t.notFound(t.quotation, quotationNumber),
-          outputContexts: []
-        };
-      }
-  
-      const statusMessage = this.getQuotationStatusMessage(quotationStatus.status, lang);
-      const amount = this.formatCurrency(quotationStatus.details?.amount || 0, lang);
-      const date = this.formatDate(quotationStatus.details?.date?.toISOString(), lang);
-  
-      return {
-        fulfillmentText: lang === 'fr' 
-          ? `Statut du devis ${quotationNumber}: ${statusMessage}\nMontant total: ${amount}\nDate de création: ${date}`
-          : `Status of quotation ${quotationNumber}: ${statusMessage}\nTotal amount: ${amount}\nCreation date: ${date}`,
-        outputContexts: [{
-          name: `projects/${this.PROJECT_ID}/agent/sessions/${sessionId}/contexts/quotation-status`,
-          lifespanCount: 5,
-          parameters: {
-            quotationNumber,
-            status: quotationStatus.status,
-            amount: quotationStatus.details?.amount,
-            date: quotationStatus.details?.date
-          }
-        }]
-      };
-    } catch (error) {
-      console.error('Error handling quotation status:', error);
-      return {
-        fulfillmentText: t.error,
+    if (!quotationStatus) {
+      const response = {
+        fulfillmentText: t.notFound(t.quotation, quotationNumber),
         outputContexts: []
       };
+      this.saveToHistory(sessionId, `What is the status of quotation ${quotationNumber}`, response.fulfillmentText);
+      return response;
     }
+
+    const statusMessage = this.getQuotationStatusMessage(quotationStatus.status, lang);
+    const amount = this.formatCurrency(quotationStatus.details?.amount || 0, lang);
+    const date = this.formatDate(quotationStatus.details?.date?.toISOString(), lang);
+
+    const fulfillmentText = lang === 'fr' 
+      ? `Statut du devis ${quotationNumber}: ${statusMessage}\nMontant total: ${amount}\nDate de création: ${date}`
+      : `Status of quotation ${quotationNumber}: ${statusMessage}\nTotal amount: ${amount}\nCreation date: ${date}`;
+
+    const response = {
+      fulfillmentText,
+      outputContexts: [{
+        name: `projects/${this.PROJECT_ID}/agent/sessions/${sessionId}/contexts/quotation-status`,
+        lifespanCount: 5,
+        parameters: {
+          quotationNumber,
+          status: quotationStatus.status,
+          amount: quotationStatus.details?.amount,
+          date: quotationStatus.details?.date
+        }
+      }]
+    };
+
+    // Sauvegarder dans l'historique
+    this.saveToHistory(sessionId, `What is the status of quotation ${quotationNumber}`, fulfillmentText);
+    
+    return response;
+  } catch (error) {
+    console.error('Error handling quotation status:', error);
+    const response = {
+      fulfillmentText: t.error,
+      outputContexts: []
+    };
+    this.saveToHistory(sessionId, `What is the status of quotation ${quotationNumber}`, response.fulfillmentText);
+    return response;
   }
+}
   
   private extractQuotationNumber(text: string): string | null {
     const patterns = [
@@ -550,10 +664,12 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
       const paidAmount = this.formatCurrency(invoiceStatus.details?.paidAmount || 0, lang);
       const dueDate = this.formatDate(invoiceStatus.details?.dueDate, lang);
   
+      const fulfillmentText = lang === 'fr' 
+        ? `Statut de la facture ${invoiceNumber}: ${statusMessage}\nMontant: ${amount}\nMontant payé: ${paidAmount}\nDate d'échéance: ${dueDate}`
+        : `Status of invoice ${invoiceNumber}: ${statusMessage}\nAmount: ${amount}\nPaid amount: ${paidAmount}\nDue date: ${dueDate}`;
+  
       return {
-        fulfillmentText: lang === 'fr' 
-          ? `Statut de la facture ${invoiceNumber}: ${statusMessage}\nMontant: ${amount}\nMontant payé: ${paidAmount}\nDate d'échéance: ${dueDate}`
-          : `Status of invoice ${invoiceNumber}: ${statusMessage}\nAmount: ${amount}\nPaid amount: ${paidAmount}\nDue date: ${dueDate}`,
+        fulfillmentText,
         outputContexts: [{
           name: `projects/${this.PROJECT_ID}/agent/sessions/${sessionId}/contexts/invoice-status`,
           lifespanCount: 5,
@@ -681,7 +797,6 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
         [EXPENSE_INVOICE_STATUS.PartiallyPaid]: 'Partially Paid',
         [EXPENSE_INVOICE_STATUS.Unpaid]: 'Unpaid',
         [EXPENSE_INVOICE_STATUS.Expired]: 'Expired',
-        [EXPENSE_INVOICE_STATUS.Archived]: 'Archived'
       },
       fr: {
         [EXPENSE_INVOICE_STATUS.Nonexistent]: 'Inexistant',
@@ -691,7 +806,6 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
         [EXPENSE_INVOICE_STATUS.PartiallyPaid]: 'Partiellement payé',
         [EXPENSE_INVOICE_STATUS.Unpaid]: 'Impayé',
         [EXPENSE_INVOICE_STATUS.Expired]: 'Expiré',
-        [EXPENSE_INVOICE_STATUS.Archived]: 'Archivé'
       },
       es: {
         [EXPENSE_INVOICE_STATUS.Nonexistent]: 'Inexistente',
@@ -701,7 +815,6 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
         [EXPENSE_INVOICE_STATUS.PartiallyPaid]: 'Parcialmente pagado',
         [EXPENSE_INVOICE_STATUS.Unpaid]: 'No pagado',
         [EXPENSE_INVOICE_STATUS.Expired]: 'Expirado',
-        [EXPENSE_INVOICE_STATUS.Archived]: 'Archivado'
       }
     };
     
@@ -754,7 +867,9 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
       expenseMetaDataId?: number;
       isDeletionRestricted?: boolean;
     },
-    lang: string = 'fr'
+    lang: string = 'fr',
+    sessionId?: string,  // Ajoutez ce paramètre optionnel
+    userQuery?: string   // Ajoutez ce paramètre optionnel
   ) {
     const t = this.getTranslation(lang);
     const queryRunner = this.dataSource.createQueryRunner();
@@ -881,15 +996,21 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
   
       await queryRunner.commitTransaction();
   
-      return {
+      const successMessage = t.quotationCreated
+  .replace('{{object}}', savedQuotation.object)
+  .replace('{{number}}', savedQuotation.sequentialNumbr)
+  .replace('{{total}}', savedQuotation.total.toFixed(2));
+
+// Sauvegarder dans l'historique
+if (sessionId) {
+  this.saveToHistory(sessionId, userQuery, successMessage);
+}
+
+    return {
         success: true,
         quotationNumber: savedQuotation.sequentialNumbr,
         total: savedQuotation.total,
-        subTotal: savedQuotation.subTotal,
-        message: t.quotationCreated
-          .replace('{{object}}', savedQuotation.object)
-          .replace('{{number}}', savedQuotation.sequentialNumbr)
-          .replace('{{total}}', savedQuotation.total.toFixed(2)),
+        message: successMessage,
         details: {
           quotationId: savedQuotation.id,
           date: savedQuotation.date,
@@ -932,7 +1053,9 @@ public async getPredictedLatePayments(
   firmId: number,
   minAmount: number = 100,
   currency: string = 'EUR',
-  daysAhead: number = 30
+  daysAhead: number = 30,
+  sessionId?: string, // Ajout du paramètre sessionId
+  userQuery?: string   // Ajout du paramètre userQuery (la question originale)
 ) {
   try {
     // 1. Vérifier la devise
@@ -941,8 +1064,13 @@ public async getPredictedLatePayments(
     });
     
     if (!currencyEntity) {
-      throw new Error(`Devise ${currency} non trouvée`);
+      const errorMsg = `Devise ${currency} non trouvée`;
+      if (sessionId && userQuery) {
+        this.saveToHistory(sessionId, userQuery, errorMsg);
+      }
+      throw new Error(errorMsg);
     }
+
 
     // 2. Calculer les dates importantes
     const currentDate = new Date();
@@ -999,24 +1127,49 @@ public async getPredictedLatePayments(
       (sum, invoice) => sum + invoice.remainingAmount, 0
     );
 
-    return {
+    let responseText = `Late payments report:\n`;
+    responseText += `- Total invoices: ${lateInvoices.length}\n`;
+    responseText += `- Total remaining: ${totalRemaining.toFixed(2)} ${currency}\n`;
+    responseText += `Invoices:\n`;
+    
+    lateInvoices.forEach(inv => {
+      responseText += `  ${inv.invoiceNumber}: ${inv.remainingAmount} ${currency} (${inv.daysLate} days late)\n`;
+    });
+
+    const response = {
       success: true,
       invoices: lateInvoices,
       count: lateInvoices.length,
-      totalRemaining: parseFloat(totalRemaining.toFixed(2))
+      totalRemaining: parseFloat(totalRemaining.toFixed(2)),
+      formattedResponse: responseText // Ajout de la réponse formatée
     };
+
+    // Sauvegarder dans l'historique si sessionId et userQuery sont fournis
+    if (sessionId && userQuery) {
+      this.saveToHistory(sessionId, userQuery, responseText);
+    }
+
+    return response;
 
   } catch (error) {
     console.error('Erreur:', error);
-    return {
+    const errorResponse = {
       success: false,
       error: error.message,
       invoices: [],
       count: 0,
       totalRemaining: 0
     };
+
+    // Sauvegarder l'erreur dans l'historique
+    if (sessionId && userQuery) {
+      this.saveToHistory(sessionId, userQuery, `Error: ${error.message}`);
+    }
+
+    return errorResponse;
   }
 }
+
 
 private getMissingParam(params: any): string | null {
   if (!params.firmId) return 'firmId';
@@ -1027,254 +1180,153 @@ private getMissingParam(params: any): string | null {
 }
 
 
-private buildMissingParamResponse(
-  missingParam: string,
-  sessionId: string,
-  currentParams: any,
-  contexts: any[]
+public async getInvoicePayments(
+  invoiceNumber: string, 
+  lang: string = 'fr',
+  sessionId?: string,
+  userQuery?: string
 ) {
-  const prompts = {
-    firmId: "Veuillez entrer l'ID de l'entreprise :",
-    currency: "Quelle devise souhaitez-vous utiliser ? (EUR par défaut)",
-    minAmount: "Quel est le montant minimum ? (100 par défaut)",
-    daysAhead: "Sur combien de jours souhaitez-vous vérifier ? (30 par défaut)"
-  };
-
-  // Nettoyer les anciens contextes d'attente
-  const filteredContexts = contexts.filter(c => 
-    !c.name.includes('awaiting_')
-  );
-
-  return {
-    fulfillmentText: prompts[missingParam],
-    outputContexts: [
-      ...filteredContexts,
-      {
-        name: `${sessionId}/contexts/awaiting_${missingParam}`,
-        lifespanCount: 5,
-        parameters: currentParams
-      }
-    ]
-  };
-}
-
-
-private buildValidationError(paramName: string, contexts: any[]) {
-  const errorMessages = {
-    firmId: "❌ ID entreprise invalide. Veuillez entrer un nombre positif.",
-    currency: "❌ Devise non supportée. Choisissez EUR, USD ou GBP.",
-    minAmount: "❌ Montant invalide. Entrez un nombre positif.",
-    daysAhead: "❌ Période invalide. Doit être entre 1 et 365 jours."
-  };
-
-  return {
-    fulfillmentText: errorMessages[paramName] || "Valeur incorrecte",
-    outputContexts: contexts // Conserve le contexte actuel pour réessayer
-  };
-}
-
-private validateParam(paramName: string, value: any): boolean {
-  const validators = {
-    firmId: (v) => !isNaN(Number(v)) && Number(v) > 0,
-    currency: (v) => ['EUR', 'USD', 'GBP'].includes(String(v).toUpperCase()),
-    minAmount: (v) => !isNaN(Number(v)) && Number(v) >= 0,
-    daysAhead: (v) => !isNaN(Number(v)) && Number(v) > 0 && Number(v) <= 365
-  };
-
-  if (!validators[paramName]) {
-    console.error(`No validator defined for parameter: ${paramName}`);
-    return false;
-  }
-
-  return validators[paramName](value);
-}
-
-
-
-private buildParamPrompt(param: string, sessionId: string, currentParams: any) {
-  const prompts = {
-    firmId: "Veuillez entrer l'ID de l'entreprise :",
-    currency: "Quelle devise ? (EUR par défaut)",
-    minAmount: "Montant minimum ? (100 par défaut)", 
-    daysAhead: "Période en jours ? (30 par défaut)"
-  };
-
-  return {
-    fulfillmentText: prompts[param],
-    outputContexts: [{
-      name: `projects/your-project/sessions/${sessionId}/contexts/awaiting_${param}`,
-      lifespanCount: 5,
-      parameters: currentParams // Conserve TOUS les paramètres
-    }]
-  };
-}
-private getCurrentParams(contexts: any[]): any {
-  const contextWithParams = contexts.find(c => c.parameters);
-  return contextWithParams?.parameters || {};
-}
-
-private getNextMissingParam(params: any): string | null {
-  // Ordre dans lequel nous demandons les paramètres
-  const paramOrder = ['firmId', 'currency', 'minAmount', 'daysAhead'];
-  
-  for (const param of paramOrder) {
-    if (!params[param] && params[param] !== 0) { // 0 est une valeur valide pour certains paramètres
-      return param;
-    }
-  }
-  return null;
-}
-private buildFinalResponse(results: any, sessionId: string) {
-  if (!results.success) {
-    return {
-      fulfillmentText: `❌ Erreur: ${results.error}`,
-      outputContexts: []
-    };
-  }
-
-  if (results.count === 0) {
-    return {
-      fulfillmentText: "✅ Aucune facture en retard trouvée pour ces critères.",
-      outputContexts: []
-    };
-  }
-
-  // Formater le texte de réponse
-  let responseText = `📊 ${results.count} facture(s) en retard\n`;
-  responseText += `💶 Total restant dû: ${results.totalRemaining.toFixed(2)} ${results.invoices[0]?.currency || 'EUR'}\n\n`;
-  
-  // Limiter à 5 factures pour le texte
-  results.invoices.slice(0, 5).forEach(invoice => {
-    const dueDate = new Date(invoice.dueDate);
-    responseText += `➤ Facture ${invoice.number || 'N/A'}: `;
-    responseText += `${invoice.amount} ${invoice.currency} `;
-    responseText += `(retard: ${invoice.daysLate || 0} jour(s), `;
-    responseText += `échéance: ${dueDate.toLocaleDateString('fr-FR')})\n`;
-  });
-
-  return {
-    fulfillmentText: responseText,
-    outputContexts: [{
-      name: `${sessionId}/contexts/payment_results`,
-      lifespanCount: 5, // Augmenté pour permettre le suivi
-      parameters: {
-        success: true,
-        count: results.count,
-        invoices: results.invoices.map(invoice => ({
-          id: invoice.id,
-          number: invoice.number,
-          amount: invoice.amount,
-          currency: invoice.currency,
-          dueDate: invoice.dueDate,
-          status: invoice.status,
-          daysLate: invoice.daysLate || 0,
-          remainingAmount: invoice.amount // Ou calculer selon votre logique
-        })),
-        totalRemaining: results.totalRemaining,
-        metadata: {
-          generatedAt: new Date().toISOString()
-        }
-      }
-    }]
-  };
-}
-private buildErrorResponse(error: Error, sessionId: string) {
-  return {
-    fulfillmentText: "Désolé, une erreur s'est produite lors de la recherche.",
-    outputContexts: [{
-      name: `${sessionId}/contexts/error_occurred`,
-      lifespanCount: 1,
-      parameters: {
-        error: error.message
-      }
-    }]
-  };
-}
-
-public async getInvoicePayments(invoiceNumber: string, lang: string = 'fr') {
   const t = this.getTranslation(lang);
   
+  // Validation des entrées
+  if (!invoiceNumber) {
+    const errorMsg = t.missingNumber(t.invoice);
+    if (sessionId) this.saveToHistory(sessionId, userQuery || 'Invoice payment query', errorMsg);
+    return { success: false, message: errorMsg };
+  }
+
   try {
-    // 1. Trouver la facture avec ses paiements en chargeant explicitement les relations
     const invoice = await this.expenseInvoiceRepository.findOne({
       where: { sequentialNumbr: invoiceNumber },
-      relations: [
-        'payments',
-        'payments.payment', // Charge la relation payment
-        'currency'
-      ]
+      relations: ['payments', 'payments.payment', 'currency']
     });
 
     if (!invoice) {
-      return { 
-        success: false, 
-        message: t.notFound(t.invoice, invoiceNumber) 
-      };
+      const notFoundMsg = t.notFound(t.invoice, invoiceNumber);
+      if (sessionId) this.saveToHistory(sessionId, userQuery || `Payments for ${invoiceNumber}`, notFoundMsg);
+      return { success: false, message: notFoundMsg };
     }
 
-    // 2. Calculer les montants
+    // Calcul des montants
     const payments = invoice.payments || [];
     const paidAmount = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
     const remainingAmount = invoice.total - paidAmount;
 
-    // 3. Formater les données de paiement
-    const formattedPayments = payments.map(p => ({
-      id: p.payment?.id,
-      amount: p.amount,
-      date: p.payment?.date, // Utilisez la date du payment plutôt que de l'invoice
-      mode: this.getPaymentMode(p.payment?.mode, lang),
-      notes: p.payment?.notes || ''
-    })).filter(p => p.date); // Filtrez les paiements sans date si nécessaire
+    // Formatage des paiements avec vérification de sécurité
+    const formattedPayments = payments
+      .filter(p => p.payment?.date) // Filtre les paiements sans date
+      .map(p => ({
+        id: p.payment?.id,
+        amount: p.amount || 0,
+        date: p.payment.date,
+        mode: this.getPaymentMode(p.payment?.mode, lang),
+        notes: p.payment?.notes || ''
+      }));
+
+    // Construction de la réponse
+    const currencyCode = invoice.currency?.code || 'EUR';
+    const paymentLines = formattedPayments.map(p => 
+      `- ${p.amount} ${currencyCode} (${p.mode}) ${lang === 'en' ? 'on' : 'le'} ${new Date(p.date).toLocaleDateString(lang)}`
+    ).join('\n');
+
+    const responseText = [
+      lang === 'en' ? `Payments for invoice ${invoice.sequentialNumbr}:` : `Paiements pour la facture ${invoice.sequentialNumbr}:`,
+      paymentLines,
+      '',
+      lang === 'en' ? `Total: ${invoice.total} ${currencyCode}` : `Total : ${invoice.total} ${currencyCode}`,
+      lang === 'en' ? `Paid: ${paidAmount} ${currencyCode}` : `Payé : ${paidAmount} ${currencyCode}`,
+      lang === 'en' ? `Remaining: ${remainingAmount} ${currencyCode}` : `Restant : ${remainingAmount} ${currencyCode}`
+    ].join('\n');
+
+    // Sauvegarde dans l'historique
+    if (sessionId) {
+      this.saveToHistory(
+        sessionId, 
+        userQuery || `Get payments for ${invoiceNumber}`,
+        responseText
+      );
+    }
 
     return {
       success: true,
-      invoiceNumber,
+      invoiceNumber: invoice.sequentialNumbr,
       total: invoice.total,
       paidAmount,
       remainingAmount,
-      currency: invoice.currency?.code || 'EUR',
-      payments: formattedPayments
+      currency: currencyCode,
+      payments: formattedPayments,
+      formattedResponse: responseText
     };
+
   } catch (error) {
     console.error('Error getting invoice payments:', error);
+    const errorMsg = `${t.error}: ${error.message}`;
+    
+    if (sessionId) {
+      this.saveToHistory(
+        sessionId, 
+        userQuery || `Payment query for ${invoiceNumber}`, 
+        errorMsg
+      );
+    }
+    
     return { 
       success: false, 
-      message: t.error 
+      message: errorMsg 
     };
   }
 }
 
-private getPaymentMode(mode: string, lang: string): string {
+private getPaymentMode(mode: string | undefined, lang: string): string {
+  if (!mode) return lang === 'fr' ? 'Mode inconnu' : 'Unknown mode';
+
   const modes = {
-    [PAYMENT_MODE.Cash]: {
-      en: 'Cash',
-      fr: 'Espèces',
-      es: 'Efectivo'
-    },
-    [PAYMENT_MODE.CreditCard]: {
-      en: 'Credit Card',
-      fr: 'Carte de crédit',
-      es: 'Tarjeta de crédito'
-    },
-    [PAYMENT_MODE.Check]: {
-      en: 'Check',
-      fr: 'Chèque',
-      es: 'Cheque'
-    },
-    [PAYMENT_MODE.BankTransfer]: {
-      en: 'Bank Transfer',
-      fr: 'Virement bancaire',
-      es: 'Transferencia bancaria'
-    },
-    [PAYMENT_MODE.WireTransfer]: {
-      en: 'Wire Transfer',
-      fr: 'Virement',
-      es: 'Transferencia'
-    }
+    [PAYMENT_MODE.Cash]: { en: 'Cash', fr: 'Espèces', es: 'Efectivo' },
+    [PAYMENT_MODE.CreditCard]: { en: 'Credit Card', fr: 'Carte de crédit', es: 'Tarjeta de crédito' },
+    [PAYMENT_MODE.Check]: { en: 'Check', fr: 'Chèque', es: 'Cheque' },
+    [PAYMENT_MODE.BankTransfer]: { en: 'Bank Transfer', fr: 'Virement bancaire', es: 'Transferencia bancaria' },
+    [PAYMENT_MODE.WireTransfer]: { en: 'Wire Transfer', fr: 'Virement', es: 'Transferencia' }
   };
 
-  // Retourne la traduction si trouvée, sinon retourne le mode original sans le préfixe
-  return modes[mode]?.[lang] || mode.replace('payment.payment_mode.', '');
+  // Nettoyage du mode si nécessaire (enlève les préfixes)
+  const cleanMode = mode.replace('payment.payment_mode.', '');
+  
+  return modes[cleanMode]?.[lang] || 
+         modes[cleanMode]?.en || 
+         cleanMode;
 }
 
+// En haut de la classe, ajoutez cette propriété
+private async saveToHistory(sessionId: string, userMessage: string, botResponse: any): Promise<void> {
+  try {
+    const responseText = typeof botResponse === 'string' 
+      ? botResponse 
+      : botResponse?.fulfillmentText || JSON.stringify(botResponse);
+
+    const entry: HistoryEntry = {
+      user: userMessage.substring(0, 500),
+      bot: responseText.substring(0, 2000),
+      timestamp: new Date().toISOString()
+    };
+
+    // Envoyer un seul entry (pas un tableau)
+    await this.historyRepository.saveSessionHistory(sessionId, entry);
+  } catch (error) {
+    console.error('History save error:', error);
+  }
+}
+public async getHistory(sessionId: string): Promise<string> {
+  const { entries } = await this.historyRepository.getFullHistory(sessionId);
+  
+  if (!entries.length) {
+    return "No conversation history available";
+  }
+
+  // Afficher du plus ancien au plus récent
+  return entries
+    .map((entry, index) => 
+      `${index + 1}. User: ${entry.user}\n   Bot: ${entry.bot}`
+    )
+    .join('\n\n');
+}
 }

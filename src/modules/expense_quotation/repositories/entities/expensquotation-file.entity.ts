@@ -29,4 +29,7 @@ export class ExpensQuotationUploadEntity extends EntityHelper {
 
   @Column({ type: 'int' })
   uploadId: number;
+  @Column({ nullable: true })
+  pdfFileId: number; // Ajoutez cette ligne
+
 }

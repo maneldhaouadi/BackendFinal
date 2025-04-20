@@ -16,6 +16,8 @@ import { UploadEntity } from 'src/common/storage/repositories/entities/upload.en
 import { StorageModule } from 'src/common/storage/storage.module'; // Import du StorageModule
 import { FirmRepository } from '../firm/repositories/repository/firm.repository';
 import { FirmEntity } from '../firm/repositories/entities/firm.entity';
+import { HistoryRepository } from './repositories/repository/HistoryRepository';
+import {HistoryEntity } from './repositories/entities/History.entity';
 
 @Module({
   imports: [
@@ -27,7 +29,8 @@ import { FirmEntity } from '../firm/repositories/entities/firm.entity';
       ArticleEntity,
       InterlocutorEntity,
       FirmEntity,
-      UploadEntity
+      UploadEntity,
+      HistoryEntity
     ]),
     StorageModule, // Import du StorageModule qui contient le StorageService
   ],
@@ -39,6 +42,7 @@ import { FirmEntity } from '../firm/repositories/entities/firm.entity';
     InterlocutorRepository,
     FirmRepository,
     ExpenseArticleQuotationEntryRepository,
+    HistoryRepository
   ],
   exports: [DialogflowService],
 })

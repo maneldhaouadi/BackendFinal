@@ -476,71 +476,81 @@ if (updateInvoiceDto.uploads) {
   }
 
   async duplicate(duplicateInvoiceDto: ExpenseDuplicateInvoiceDto): Promise<ExpenseResponseInvoiceDto> {
-    // Récupérer la facture existante
-    const existingInvoice = await this.findOneByCondition({
-      filter: `id||$eq||${duplicateInvoiceDto.id}`,
-      join: 'expenseInvoiceMetaData,articleExpenseEntries,articleExpenseEntries.expenseArticleInvoiceEntryTaxes,uploads,uploadPdfField',
-    });
+    try {
+      const existingInvoice = await this.findOneByCondition({
+        filter: `id||$eq||${duplicateInvoiceDto.id}`,
+        join: 'expenseInvoiceMetaData,articleExpenseEntries,articleExpenseEntries.expenseArticleInvoiceEntryTaxes,uploads,uploadPdfField',
+      });
   
-    if (!existingInvoice) {
-      throw new Error(`Invoice with id ${duplicateInvoiceDto.id} not found`);
-    }
-  
-    // Dupliquer les métadonnées de la facture
-    const invoiceMetaData = await this.invoiceMetaDataService.duplicate(
-      existingInvoice.expenseInvoiceMetaData.id,
-    );
-  
-    // Exclure 'id', 'sequential' et 'sequentialNumbr' avant de dupliquer
-    const { id, sequential, sequentialNumbr, ...invoiceData } = existingInvoice;
-  
-    // Créer une nouvelle facture sans les fichiers pour l'instant
-    const invoice = await this.invoiceRepository.save({
-      ...invoiceData, // Copie tout sauf 'id', 'sequential' et 'sequentialNumbr'
-      id: undefined, // Nouvelle facture sans l'ID original
-      sequential: null, // Ne pas conserver l'ancien numéro séquentiel
-      sequentialNumbr: null, // Ne pas copier sequentialNumbr
-      expenseInvoiceMetaData: invoiceMetaData,
-      articleExpenseEntries: [], // Les articles seront dupliqués plus tard
-      uploads: [], // Les uploads seront dupliqués plus tard
-      amountPaid: 0, // Réinitialiser le montant payé
-      status: EXPENSE_INVOICE_STATUS.Draft, // Statut de la nouvelle facture
-    });
-  
-    // Dupliquer les articles si nécessaire
-    if (existingInvoice.articleExpenseEntries?.length > 0) {
-      const articleInvoiceEntries = await this.articleInvoiceEntryService.duplicateMany(
-        existingInvoice.articleExpenseEntries.map((entry) => entry.id),
-        invoice.id,
-      );
-      invoice.articleExpenseEntries = articleInvoiceEntries;
-    }
-  
-    // Gérer les fichiers joints uniquement si includeFiles est true
-    let uploads = [];
-    if (duplicateInvoiceDto.includeFiles && existingInvoice.uploads) {
-      const uploadIds = existingInvoice.uploads.map((upload) => upload.id);
-      uploads = await this.invoiceUploadService.duplicateMany(uploadIds, invoice.id);
-    }
-  
-    // Gérer le fichier PDF uniquement si includeFiles est true
-    let uploadPdfField = null;
-    if (duplicateInvoiceDto.includeFiles && existingInvoice.uploadPdfField) {
-      const existingPdfFile = await this.storageService.findOneById(existingInvoice.uploadPdfField.id);
-      if (!existingPdfFile) {
-        throw new Error('Existing PDF file not found');
+      if (!existingInvoice) {
+        throw new Error(`Invoice with id ${duplicateInvoiceDto.id} not found`);
       }
-      const duplicatedPdfFile = await this.storageService.duplicate(existingPdfFile.id);
-      uploadPdfField = duplicatedPdfFile.id; // Récupérer l'ID du fichier PDF dupliqué
-    }
   
-    // Associer les fichiers dupliqués (uploads et PDF) à la nouvelle facture
-    return this.invoiceRepository.save({
-      ...invoice,
-      uploads,
-      uploadPdfField: uploadPdfField ? uploadPdfField : null, // Associer le fichier PDF dupliqué
-    });
+      const invoiceMetaData = await this.invoiceMetaDataService.duplicate(
+        existingInvoice.expenseInvoiceMetaData.id
+      );
+  
+      // Création de la nouvelle facture (sans fichiers)
+      const baseData = {
+        ...existingInvoice,
+        id: undefined,
+        createdAt: undefined,
+        updatedAt: undefined,
+        sequential: null,
+        sequentialNumbr: null,
+        status: EXPENSE_INVOICE_STATUS.Draft,
+        expenseInvoiceMetaData: invoiceMetaData,
+        articleExpenseEntries: [],
+        uploads: [], // Initialisé à vide
+        uploadPdfField: null, // Initialisé à null
+        amountPaid: 0,
+      };
+  
+      const newInvoice = await this.invoiceRepository.save(baseData);
+  
+      // Duplication des articles
+      const duplicatedArticles = existingInvoice.articleExpenseEntries?.length
+        ? await this.articleInvoiceEntryService.duplicateMany(
+            existingInvoice.articleExpenseEntries.map(e => e.id),
+            newInvoice.id
+          )
+        : [];
+  
+      // Gestion des fichiers
+      let finalUploads = [];
+      let finalPdfField = null;
+  
+      if (duplicateInvoiceDto.includeFiles) {
+        // Duplication des uploads
+        if (existingInvoice.uploads?.length > 0) {
+          finalUploads = await this.invoiceUploadService.duplicateMany(
+            existingInvoice.uploads.map(u => u.id),
+            newInvoice.id
+          );
+        }
+  
+        // Duplication du PDF
+        if (existingInvoice.uploadPdfField?.id) {
+          finalPdfField = await this.storageService.duplicate(existingInvoice.uploadPdfField.id);
+        }
+      }
+  
+      // Mise à jour finale
+      const result = await this.invoiceRepository.save({
+        ...newInvoice,
+        articleExpenseEntries: duplicatedArticles,
+        uploads: finalUploads,
+        uploadPdfField: finalPdfField,
+      });
+  
+      return result;
+    } catch (error) {
+      console.error("[DUPLICATION FAILED]", error);
+      throw error;
+    }
   }
+  
+  
 
   async updateMany(
     updateInvoiceDtos: ExpenseUpdateInvoiceDto[],

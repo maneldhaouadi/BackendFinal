@@ -132,10 +132,8 @@ import { PdfModule } from 'src/modules/pdf-extraction/pdf.module';
     ExpensePaymentConditionModule,
     ArticleHistoryModule,
     DialogflowModule,
-    OcrModule
-
-
-
+    OcrModule,
+    PdfModule,
   ],
 })
 export class RoutesPublicModule {}

@@ -4,7 +4,7 @@ import { ExpensQuotationUploadEntity } from '../repositories/entities/expensquot
 import { QuotationUploadNotFoundException } from '../errors/quotation-upload.notfound';
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
 import { QueryBuilder } from 'src/common/database/utils/database-query-builder';
-import { FindManyOptions, FindOneOptions } from 'typeorm';
+import { FindManyOptions, FindOneOptions, In } from 'typeorm';
 import { PageDto } from 'src/common/database/dtos/database.page.dto';
 import { PageMetaDto } from 'src/common/database/dtos/database.page-meta.dto';
 import { StorageService } from 'src/common/storage/services/storage.service';
@@ -19,10 +19,16 @@ export class ExpensQuotationUploadService {
 
   
   async findOneById(id: number): Promise<ExpensQuotationUploadEntity> {
-    const upload = await this.quotationUploadRepository.findOneById(id);
+    const upload = await this.quotationUploadRepository.findOne({ 
+      where: { id },
+      relations: ['upload']
+    });
+  
     if (!upload) {
-      throw new QuotationUploadNotFoundException();
+      console.warn(`Quotation upload with ID ${id} not found - skipping`);
+      return null; // Retourne null au lieu de throw une exception
     }
+  
     return upload;
   }
 
@@ -47,6 +53,20 @@ export class ExpensQuotationUploadService {
     return await this.quotationUploadRepository.findAll(
       queryOptions as FindManyOptions<ExpensQuotationUploadEntity>,
     );
+  }
+
+  async saveMany(expensequotationId: number, uploadIds: number[]): Promise<void> {
+    await Promise.all(
+      uploadIds.map(uploadId => 
+        this.quotationUploadRepository.save({ expensequotationId, uploadId })
+      )
+    );
+  }
+
+  async findByUploadIds(uploadIds: number[]): Promise<ExpensQuotationUploadEntity[]> {
+    return this.quotationUploadRepository.findAll({
+      where: { uploadId: In(uploadIds) }
+    });
   }
 
 
@@ -84,29 +104,74 @@ export class ExpensQuotationUploadService {
 
 
 
-  async duplicate(
-    id: number,
-    quotationId: number,
-  ): Promise<ExpensQuotationUploadEntity> {
-    //Find the original quotation upload entity
+  async duplicate(id: number, quotationId: number): Promise<ExpensQuotationUploadEntity> {
     const originalQuotationUpload = await this.findOneById(id);
-
-    //Use the StorageService to duplicate the file
-    const duplicatedUpload = await this.storageService.duplicate(
-      originalQuotationUpload.uploadId,
-
-
-    );
-
-    //Save the duplicated QuotationUploadEntity
-    const duplicatedQuotationUpload = await this.quotationUploadRepository.save(
-      {
+    
+    // Si l'upload n'existe pas, retourne null
+    if (!originalQuotationUpload) {
+      return null;
+    }
+  
+    try {
+      // Vérifie que l'upload existe dans le storage
+      const uploadExists = await this.storageService.findOneById(originalQuotationUpload.uploadId);
+      if (!uploadExists) {
+        console.warn(`Upload file with ID ${originalQuotationUpload.uploadId} not found`);
+        return null;
+      }
+  
+      // Duplique le fichier
+      const duplicatedUpload = await this.storageService.duplicate(originalQuotationUpload.uploadId);
+  
+      // Crée la nouvelle entrée
+      return this.quotationUploadRepository.save({
         expensequotationId: quotationId,
         uploadId: duplicatedUpload.id,
-      },
-    );
+      });
+    } catch (error) {
+      console.error(`Error duplicating upload ${id}:`, error);
+      return null;
+    }
+  }
+  
+  async duplicateMany(uploadIds: number[], quotationId: number): Promise<ExpensQuotationUploadEntity[]> {
+    const results = [];
+    
+    for (const id of uploadIds) {
+      const duplicated = await this.duplicate(id, quotationId);
+      if (duplicated) {
+        results.push(duplicated);
+      }
+    }
+  
+    return results;
+  }
 
-    return duplicatedQuotationUpload;
+
+  async create(createDto: {
+    expensequotationId: number;
+    uploadId: number;
+  }): Promise<ExpensQuotationUploadEntity> {
+    // Validation des données requises
+    if (!createDto.expensequotationId || !createDto.uploadId) {
+      throw new Error('expensequotationId and uploadId are required');
+    }
+
+    const newUpload = this.quotationUploadRepository.create({
+      expensequotationId: createDto.expensequotationId,
+      uploadId: createDto.uploadId,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    
+    const savedUpload = await this.quotationUploadRepository.save(newUpload);
+    
+    // Vérification que l'enregistrement a bien été créé
+    if (!savedUpload.id) {
+      throw new Error('Failed to create upload record');
+    }
+    
+    return savedUpload;
   }
 
   async softDelete(id: number): Promise<ExpensQuotationUploadEntity> {
@@ -116,16 +181,7 @@ export class ExpensQuotationUploadService {
     return upload;
   }
 
-  async duplicateMany(
-    ids: number[],
-    quotationId: number,
-  ): Promise<ExpensQuotationUploadEntity[]> {
-    const duplicatedQuotationUploads = await Promise.all(
-      ids.map((id) => this.duplicate(id, quotationId)),
-    );
-    return duplicatedQuotationUploads;
-  }
-
+  
 
   async softDeleteMany(
     quotationUploadEntities: ExpensQuotationUploadEntity[],
