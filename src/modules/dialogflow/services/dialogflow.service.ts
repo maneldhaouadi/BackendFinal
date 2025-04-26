@@ -75,7 +75,11 @@ export class DialogflowService {
         quotationCreated: "Quotation {{object}} created successfully.\n- Reference: {{number}}\n- Total: {{total}} €",
         reminderSent: "Payment reminder sent successfully",
         reportGenerated: "Report generated successfully",
-        creationError: "Error creating quotation"
+        creationError: "Error creating quotation",
+        invalidDocumentType: 'Invalid document type. Please provide an invoice (INV-) or quotation (QUO-).',
+        documentNotFound: 'Document {reference} not found.',
+        fieldNotFound: 'Field {field} not found in document.',
+        comparisonError: 'An error occurred during comparison.'
       },
       fr: {
         quotation: 'devis',
@@ -94,7 +98,11 @@ export class DialogflowService {
         quotationCreated: "Devis {{object}} créé avec succès.\n- Référence : {{number}}\n- Total : {{total}} €",
         reminderSent: "Rappel de paiement envoyé avec succès",
         reportGenerated: "Rapport généré avec succès",
-        creationError: "Erreur lors de la création du devis"
+        creationError: "Erreur lors de la création du devis",
+        invalidDocumentType: 'Type de document invalide. Veuillez fournir une facture (INV-) ou un devis (QUO-).',
+        documentNotFound: 'Document {reference} introuvable.',
+        fieldNotFound: 'Champ {field} introuvable dans le document.',
+        comparisonError: 'Une erreur est survenue lors de la comparaison.'
       },
       es: {
         quotation: 'presupuesto',
@@ -113,7 +121,11 @@ export class DialogflowService {
         quotationCreated: "Presupuesto {{object}} creado correctamente.\n- Referencia: {{number}}\n- Total: {{total}} €",
         reminderSent: "Recordatorio de pago enviado correctamente",
         reportGenerated: "Informe generado correctamente",
-        creationError: "Error al crear presupuesto"
+        creationError: "Error al crear presupuesto",
+        invalidDocumentType: 'Tipo de documento inválido. Proporcione una factura (INV-) o presupuesto (QUO-).',
+        documentNotFound: 'Documento {reference} no encontrado.',
+        fieldNotFound: 'Campo {field} no encontrado en el documento.',
+        comparisonError: 'Se produjo un error durante la comparación.'
       }
     };
     
@@ -134,14 +146,15 @@ export class DialogflowService {
       sessionId
     );
   
-    // Charger l'historique existant
-    const existingHistory = await this.historyRepository.getFullHistory(sessionId);    
-    // Vérifier si c'est une demande d'historique
+    // 1. Vérifier l'historique
+    const existingHistory = await this.historyRepository.getFullHistory(sessionId);
     const isHistoryRequest = 
-    queryText.toLowerCase().includes('history') || 
-    queryText.toLowerCase().includes('historique') ||
-    queryText.toLowerCase().includes('previous conversations') ||
-    queryText.toLowerCase().includes('conversations précédentes');  if (isHistoryRequest) {
+      queryText.toLowerCase().includes('history') || 
+      queryText.toLowerCase().includes('historique') ||
+      queryText.toLowerCase().includes('previous conversations') ||
+      queryText.toLowerCase().includes('conversations précédentes');
+  
+    if (isHistoryRequest) {
       const history = await this.getHistory(sessionId);
       const response = {
         fulfillmentText: history || t('noHistoryAvailable'),
@@ -153,10 +166,34 @@ export class DialogflowService {
       return response;
     }
   
-    // Traitement des numéros de documents
+    // 2. Extraire les numéros de documents d'abord
     const invoiceNumber = this.extractInvoiceNumber(queryText);
     const quotationNumber = this.extractQuotationNumber(queryText);
   
+    // 3. Détection des comparaisons - PRIORITAIRE
+    if (this.isComparisonRequest(queryText)) {
+      const comparisonParams = {
+        data_type: invoiceNumber ? 'facture' : 'devis',
+        field_name: this.extractFieldName(queryText),
+        user_value: this.extractComparisonValue(queryText),
+        reference_id: invoiceNumber || quotationNumber
+      };
+      
+      if (comparisonParams.reference_id) {
+        const comparisonResult = await this.handleDataComparison(comparisonParams, lang);
+        if (comparisonResult.success) {
+          await this.saveToHistory(sessionId, queryText, comparisonResult.message);
+          return {
+            fulfillmentText: comparisonResult.message,
+            intent: 'CompareData',
+            allRequiredParamsPresent: true,
+            outputContexts: []
+          };
+        }
+      }
+    }
+  
+    // 4. Traitement normal des documents si pas de comparaison
     if (invoiceNumber) {
       const response = await this.handleInvoiceStatus(invoiceNumber, lang, sessionId);
       await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
@@ -169,12 +206,13 @@ export class DialogflowService {
       return response;
     }
   
-    // Préparation de la requête Dialogflow avec l'historique
+    // 5. Préparation de la requête Dialogflow standard
     const historyContent = existingHistory.entries.length > 0 
-    ? existingHistory.entries
-      .map(e => `User: ${e.user}\nBot: ${e.bot}`)
-      .join('\n\n')
-    : '';
+      ? existingHistory.entries
+          .map(e => `User: ${e.user}\nBot: ${e.bot}`)
+          .join('\n\n')
+      : '';
+  
     const request = {
       session: sessionPath,
       queryInput: {
@@ -204,7 +242,7 @@ export class DialogflowService {
         return response;
       };
   
-      // Traitement AddQuotationArticle
+      // Traitement des intents spécifiques
       if (result.intent?.displayName === 'AddQuotationArticle' && result.allRequiredParamsPresent) {
         const params = result.parameters.fields;
         const discountType = params.discountType?.stringValue?.toUpperCase() === 'AMMOUNT' 
@@ -229,107 +267,56 @@ export class DialogflowService {
         });
       }
   
-      // Traitement CreateQuotation
       if (result.intent?.displayName === 'CreateQuotation' && result.allRequiredParamsPresent) {
         try {
-            const params = result.parameters.fields;
-            
-            // Debug: Afficher les paramètres reçus
-            console.log('Raw parameters:', JSON.stringify(params, null, 2));
-    
-            const parseDialogflowDate = (dateParam: any): Date | undefined => {
-                if (!dateParam) return undefined;
-                if (dateParam.structValue) {
-                    const dateObj = dateParam.structValue.fields;
-                    return new Date(
-                        dateObj.year.numberValue,
-                        dateObj.month.numberValue - 1,
-                        dateObj.day.numberValue
-                    );
-                }
-                return dateParam.stringValue ? new Date(dateParam.stringValue) : undefined;
-            };
-    
-            // Nouvelle méthode pour extraire l'ID de l'article
-            const extractArticleId = (params: any): number | null => {
-                // Essayer d'abord le champ articleId
-                if (params.articleId?.numberValue) {
-                    return params.articleId.numberValue;
-                }
-                
-                // Si non trouvé, essayer de parser depuis queryText
-                if (params.queryText?.stringValue) {
-                    const articleId = parseInt(params.queryText.stringValue);
-                    if (!isNaN(articleId)) {
-                        return articleId;
-                    }
-                }
-                
-                return null;
-            };
-    
-            const articles = [];
-            const articleId = extractArticleId(params);
-            
-            if (articleId !== null) {
-                const articleInfo = await this.getArticleInfo(articleId, lang);
-                if (!articleInfo) {
-                    throw new Error(t.articleNotFound.replace('{{id}}', articleId.toString()));
-                }
-    
-                articles.push({
-                    articleId: articleId,
-                    quantity: params.quantity?.numberValue || 1,
-                    discount: params.discount?.numberValue || 0,
-                    discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE,
-                    unit_price: articleInfo.salePrice
-                });
-            } else {
-                throw new Error(t.missingArticleId);
+          const params = result.parameters.fields;
+          const articles = [];
+          const articleId = params.articleId?.numberValue;
+  
+          if (articleId !== undefined) {
+            const articleInfo = await this.getArticleInfo(articleId, lang);
+            if (!articleInfo) {
+              throw new Error(t.articleNotFound.replace('{{id}}', articleId.toString()));
             }
-    
-            // Reste du code inchangé...
-            const creationResult = await this.createQuotation({
-                firmName: params.firmName.stringValue,
-                cabinetId: params.cabinetId?.numberValue || 1,
-                interlocutorName: params.interlocutorName.stringValue,
-                currencyId: params.currencyId?.numberValue,
-                object: params.object?.stringValue || `${t.quotation} ${new Date().toLocaleDateString(lang)}`,
-                sequentialNumbr: params.sequentialNumbr?.stringValue,
-                articles: articles,
-                status: this.mapStatusStringToEnum(params.status?.stringValue),
-                dueDate: parseDialogflowDate(params.duedate),
-                date: parseDialogflowDate(params.date) || new Date()
-            }, lang, sessionId, queryText);
-    
-            return await saveAndReturn({
-                fulfillmentText: creationResult.message,
-                intent: result.intent.displayName,
-                parameters: result.parameters,
-                outputContexts: result.outputContexts,
-                allRequiredParamsPresent: true,
-                metadata: {
-                    quotationNumber: creationResult.quotationNumber,
-                    totalAmount: creationResult.total
-                }
+  
+            articles.push({
+              articleId: articleId,
+              quantity: params.quantity?.numberValue || 1,
+              discount: params.discount?.numberValue || 0,
+              discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE,
+              unit_price: articleInfo.salePrice
             });
-    
+          }
+  
+          const creationResult = await this.createQuotation({
+            firmName: params.firmName.stringValue,
+            cabinetId: params.cabinetId?.numberValue || 1,
+            interlocutorName: params.interlocutorName.stringValue,
+            currencyId: params.currencyId?.numberValue,
+            object: params.object?.stringValue || `${t.quotation} ${new Date().toLocaleDateString(lang)}`,
+            sequentialNumbr: params.sequentialNumbr?.stringValue,
+            articles: articles,
+            status: this.mapStatusStringToEnum(params.status?.stringValue),
+            dueDate: params.duedate?.stringValue ? new Date(params.duedate.stringValue) : undefined,
+            date: params.date?.stringValue ? new Date(params.date.stringValue) : new Date()
+          }, lang, sessionId, queryText);
+  
+          return await saveAndReturn({
+            fulfillmentText: creationResult.message,
+            intent: result.intent.displayName,
+            parameters: result.parameters,
+            outputContexts: result.outputContexts,
+            allRequiredParamsPresent: true
+          });
         } catch (error) {
-            console.error('Error in CreateQuotation intent:', error);
-            await this.saveToHistory(
-                sessionId, 
-                queryText, 
-                `${t.creationError}: ${error.message}`
-            );
-            return {
-                fulfillmentText: `${t.creationError}: ${error.message}`,
-                intent: result.intent?.displayName,
-                parameters: result.parameters,
-                outputContexts: result.outputContexts || [],
-                allRequiredParamsPresent: false
-            };
+          console.error('Error in CreateQuotation intent:', error);
+          await this.saveToHistory(sessionId, queryText, `${t.creationError}: ${error.message}`);
+          return {
+            fulfillmentText: `${t.creationError}: ${error.message}`,
+            outputContexts: []
+          };
         }
-    }
+      }
   
       // Traitement FAQ_Invoice
       if (result.intent?.displayName === 'FAQ_Invoice' && result.parameters.fields.invoice_number?.stringValue) {
@@ -360,62 +347,103 @@ export class DialogflowService {
           lang
         );
         
-        let responseText;
-        if (!payments.success) {
-          responseText = payments.message;
-        } else {
-          responseText = lang === 'en' 
-            ? `Payments for invoice ${payments.invoiceNumber}:\n`
-            : `Paiements pour la facture ${payments.invoiceNumber}:\n`;
-            
-          payments.payments.forEach(p => {
-            responseText += `- ${p.amount} ${payments.currency} (${p.mode}) ${lang === 'en' ? 'on' : 'le'} ${new Date(p.date).toLocaleDateString(lang)}\n`;
-          });
-          
-          responseText += lang === 'en'
-            ? `\nInvoice total: ${payments.total} ${payments.currency}\n`
-            : `\nTotal facture: ${payments.total} ${payments.currency}\n`;
-          responseText += lang === 'en'
-            ? `Amount paid: ${payments.paidAmount} ${payments.currency}\n`
-            : `Montant payé: ${payments.paidAmount} ${payments.currency}\n`;
-          responseText += lang === 'en'
-            ? `Remaining: ${payments.remainingAmount} ${payments.currency}`
-            : `Reste à payer: ${payments.remainingAmount} ${payments.currency}`;
-        }
+        let responseText = payments.success
+          ? this.formatPaymentResponse(payments, lang)
+          : payments.message;
   
-        const response = {
+        return await saveAndReturn({
           fulfillmentText: responseText,
           intent: result.intent.displayName,
           parameters: result.parameters,
           outputContexts: result.outputContexts,
           allRequiredParamsPresent: true
-        };
-        
-        await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-        return response;
+        });
       }
   
       // Réponse par défaut
-      const response = {
+      return await saveAndReturn({
         fulfillmentText: result.fulfillmentText,
         intent: result.intent?.displayName,
         parameters: result.parameters,
         outputContexts: result.outputContexts,
         allRequiredParamsPresent: result.allRequiredParamsPresent
-      };
-      
-      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-      return response;
+      });
   
     } catch (error) {
       console.error('Dialogflow error:', error);
-      const response = {
+      await this.saveToHistory(sessionId, queryText, t.error);
+      return {
         fulfillmentText: t.error,
         outputContexts: []
       };
-      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-      return response;
     }
+  }
+  private extractComparisonValue(text: string): string | number | null {
+    // Détection des valeurs entre guillemets (pour le statut)
+    const quotedMatch = text.match(/['"]([^'"]+)['"]/);
+    if (quotedMatch) return quotedMatch[1].toLowerCase();
+    
+    // Détection des valeurs booléennes
+    if (text.includes('payé') || text.includes('paid')) return 'paid';
+    if (text.includes('non payé') || text.includes('unpaid')) return 'unpaid';
+    
+    // Détection spécifique des montants après "montant de" ou "amount of"
+    const amountPattern = /(?:montant|amount)\s*(?:de|of)?\s*(\d+[\.,]?\d*)/i;
+    const amountMatch = text.match(amountPattern);
+    if (amountMatch) return parseFloat(amountMatch[1].replace(',', '.'));
+    
+    // Détection générique des nombres (fallback)
+    const genericNumberMatch = text.match(/(\d+[\.,]?\d*)/);
+    return genericNumberMatch ? parseFloat(genericNumberMatch[0].replace(',', '.')) : null;
+  }
+  // Méthodes utilitaires ajoutées
+  private extractDataType(text: string): string {
+    return text.includes('devis') ? 'devis' : 
+           text.includes('facture') ? 'facture' : 'document';
+  }
+  
+  private extractFieldName(text: string): string {
+    if (text.includes('montant') || text.includes('total')) return 'total';
+    if (text.includes('statut')) return 'status';
+    return 'total';
+  }
+  
+  private isComparisonRequest(text: string): boolean {
+    const comparisonKeywords = [
+      'compar', 'vérif', 'vérifie', 'confirme', 'identique', 
+      'match', 'correspond', 'est-ce que', 'a-t-il', 'a-t-elle'
+    ];
+    
+    return comparisonKeywords.some(keyword => 
+      text.toLowerCase().includes(keyword)
+    ) || /est\s*(?:il|elle)\s*(?:égal|identique)/i.test(text);
+  }
+  
+  private extractReferenceId(text: string): string | null {
+    const match = text.match(/(QUO|INV|DEV)-\d{4}-\d{2}-\d+/i);
+    return match ? match[0].toUpperCase() : null;
+  }
+  
+  private formatPaymentResponse(payments: any, lang: string): string {
+    let response = lang === 'en' 
+      ? `Payments for invoice ${payments.invoiceNumber}:\n`
+      : `Paiements pour la facture ${payments.invoiceNumber}:\n`;
+    
+    payments.payments.forEach(p => {
+      response += `- ${p.amount} ${payments.currency} (${p.mode}) ${lang === 'en' ? 'on' : 'le'} ${new Date(p.date).toLocaleDateString(lang)}\n`;
+    });
+    
+    response += lang === 'en'
+      ? `\nTotal: ${payments.total} ${payments.currency}\n`
+      : `\nTotal : ${payments.total} ${payments.currency}\n`;
+    response += lang === 'en'
+      ? `Paid: ${payments.paidAmount} ${payments.currency}\n`
+      : `Payé : ${payments.paidAmount} ${payments.currency}\n`;
+    response += lang === 'en'
+      ? `Remaining: ${payments.remainingAmount} ${payments.currency}`
+      : `Restant : ${payments.remainingAmount} ${payments.currency}`;
+  
+    return response;
   }
 
 public async getFirmByName(name: string) {
@@ -1329,4 +1357,123 @@ public async getHistory(sessionId: string): Promise<string> {
     )
     .join('\n\n');
 }
+private async handleDataComparison(
+  params: {
+    data_type: string;
+    field_name: string;
+    user_value: string | number;
+    reference_id: string;
+  },
+  lang: string = 'fr'
+): Promise<{ success: boolean; message: string }> {
+  const t = this.getTranslation(lang);
+
+  try {
+    // Récupérer le document avec les champs nécessaires
+    const document = await this.getDocumentForComparison(params.reference_id);
+    if (!document) {
+      return {
+        success: false,
+        message: t('documentNotFound', { reference: params.reference_id })
+      };
+    }
+
+    // Vérifier que la valeur utilisateur est valide
+    if (params.user_value === null || params.user_value === undefined) {
+      return {
+        success: false,
+        message: t('fieldNotFound', { field: params.field_name })
+      };
+    }
+
+    // Comparaison spéciale pour les statuts
+    if (params.field_name === 'status') {
+      return this.compareStatus(document, params.user_value, lang);
+    }
+
+    // Comparaison numérique
+    const dbValue = document[params.field_name];
+    if (dbValue === undefined) {
+      return {
+        success: false,
+        message: t('fieldNotFound', { field: params.field_name })
+      };
+    }
+
+    const comparison = Number(params.user_value) === dbValue ? 'equal' : 
+                      Number(params.user_value) > dbValue ? 'greater' : 'less';
+
+    const formattedDbValue = this.formatCurrency(dbValue, lang);
+    const formattedUserValue = this.formatCurrency(Number(params.user_value), lang);
+
+    let message = '';
+    if (lang === 'fr') {
+      message = `Comparaison pour ${document.sequentialNumbr} (${params.field_name}):\n`;
+      message += `- Valeur fournie: ${formattedUserValue}\n`;
+      message += `- Valeur en base: ${formattedDbValue}\n`;
+      message += comparison === 'equal' 
+        ? 'Les valeurs sont identiques.' 
+        : `La valeur fournie est ${comparison === 'greater' ? 'supérieure' : 'inférieure'} à celle en base.`;
+    } else {
+      message = `Comparison for ${document.sequentialNumbr} (${params.field_name}):\n`;
+      message += `- Provided value: ${formattedUserValue}\n`;
+      message += `- Database value: ${formattedDbValue}\n`;
+      message += comparison === 'equal' 
+        ? 'The values are identical.' 
+        : `The provided value is ${comparison === 'greater' ? 'greater' : 'less'} than the database value.`;
+    }
+
+    return {
+      success: true,
+      message
+    };
+
+  } catch (error) {
+    console.error('Comparison error:', error);
+    return {
+      success: false,
+      message: t('comparisonError')
+    };
+  }
+}
+
+private async getDocumentForComparison(referenceId: string): Promise<any> {
+  if (referenceId.startsWith('INV-')) {
+    return this.expenseInvoiceRepository.findOne({
+      where: { sequentialNumbr: referenceId },
+      select: ['total', 'status', 'sequentialNumbr'] // Sélectionner explicitement les champs nécessaires
+    });
+  } else if (referenceId.startsWith('QUO-')) {
+    return this.expensQuotationRepository.findOne({
+      where: { sequentialNumbr: referenceId },
+      select: ['total', 'status', 'sequentialNumbr'] // Sélectionner explicitement les champs nécessaires
+    });
+  }
+  return null;
+}
+private compareStatus(document: any, userValue: string | number, lang: string) {
+  const t = this.getTranslation(lang);
+  const dbStatus = document.status?.replace(/^expense_(invoice|quotation)\.status\./, '');
+  const normalizedUserValue = String(userValue).toLowerCase();
+  
+  const isMatch = dbStatus.toLowerCase() === normalizedUserValue;
+  
+  const statusMessage = lang === 'fr'
+    ? `Le statut de ${document.sequentialNumbr} est "${dbStatus}"`
+    : `The status of ${document.sequentialNumbr} is "${dbStatus}"`;
+  
+  const comparisonMessage = isMatch
+    ? lang === 'fr' 
+      ? 'Ceci correspond à la valeur que vous avez fournie.' 
+      : 'This matches the value you provided.'
+    : lang === 'fr'
+      ? 'Ceci ne correspond pas à la valeur que vous avez fournie.'
+      : 'This does not match the value you provided.';
+  
+  return {
+    success: true,
+    message: `${statusMessage}\n${comparisonMessage}`
+  };
+}
+
 }

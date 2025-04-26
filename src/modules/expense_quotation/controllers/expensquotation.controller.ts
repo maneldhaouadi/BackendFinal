@@ -44,16 +44,36 @@ export class ExpensQuotationController {
   @Get('/all')
 async findAll(
   @Query('status') status: string,
-  @Query() options: IQueryObject,
+  @Query('firmId') firmId: string,
+  @Query('interlocutorId') interlocutorId: string,
+  @Query('relations') relations?: string, // Ajoutez ce paramètre
+  @Query() options: IQueryObject = {},
 ): Promise<ResponseExpensQuotationDto[]> {
-  // Si 'status' est fourni, l'ajouter aux options pour la recherche
+  
+  // Gestion des relations
+  if (relations) {
+    options.relations = relations.split(',');
+  }
+  
+  if (firmId) {
+    options.filter = options.filter 
+      ? `${options.filter},firm.id||$eq||${firmId}` 
+      : `firm.id||$eq||${firmId}`;
+  }
+
+  if (interlocutorId) {
+    options.filter = options.filter 
+      ? `${options.filter},interlocutor.id||$eq||${interlocutorId}` 
+      : `interlocutor.id||$eq||${interlocutorId}`;
+  }
+
   if (status) {
     options.filter = options.filter 
       ? `${options.filter},status||$eq||${status}` 
-      : `status||$eq||${status}`;  // Applique le filtre de statut
+      : `status||$eq||${status}`;
   }
 
-  return await this.expensQuotationService.findAll(options);  // Passer les options au service
+  return await this.expensQuotationService.findAll(options);
 }
 
   

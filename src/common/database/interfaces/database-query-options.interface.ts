@@ -35,6 +35,7 @@ export interface IQueryObject {
   limit?: string;
   page?: string;
   filter?: string;
+  relations?: string[];
 }
 export interface ILooseObject {
   [key: string]: any;

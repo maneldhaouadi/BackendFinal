@@ -3,13 +3,11 @@ import { Injectable } from '@nestjs/common';
 import { ArticleExpensQuotationEntryEntity } from '../repositories/entities/article-expensquotation-entry.entity';
 import { TaxService } from 'src/modules/tax/services/tax.service';
 import { ArticleService } from 'src/modules/article/services/article.service';
-import { ResponseArticleDto } from 'src/modules/article/dtos/article.response.dto';
 import { InvoicingCalculationsService } from 'src/common/calculations/services/invoicing.calculations.service';
 import { LineItem } from 'src/common/calculations/interfaces/line-item.interface';
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
 import { QueryBuilder } from 'src/common/database/utils/database-query-builder';
 import { FindOneOptions } from 'typeorm';
-import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
 import { ArticleExpensQuotationEntryTaxService } from './article-expensquotation-entry-tax.service';
 import { CreateArticleExpensQuotationEntryDto } from '../dtos/article-expensquotation-entry.create.dto';
 import { ResponseArticleExpensQuotationEntryDto } from '../dtos/article-expensquotation-entry.response.dto';
@@ -213,4 +211,9 @@ export class ArticleExpensQuotationEntryService {
         );
         return entries;
       }
+
+
+      
 }
+
+

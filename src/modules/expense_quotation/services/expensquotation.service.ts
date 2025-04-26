@@ -62,16 +62,33 @@ export class ExpensQuotationService {
   ): Promise<ExpensQuotationEntity | null> {
     const queryBuilder = new QueryBuilder();
     const queryOptions = queryBuilder.build(query);
-    const expensequotation = await this.expensequotationRepository.findOne(
+    
+    // Ajoutez ceci pour forcer les relations
+    queryOptions.relations = [
+      ...(queryOptions.relations || []),
+      'expensearticleQuotationEntries',
+      'expensearticleQuotationEntries.article',
+      'expensearticleQuotationEntries.articleExpensQuotationEntryTaxes',
+      'expensearticleQuotationEntries.articleExpensQuotationEntryTaxes.tax'
+    ];
+  
+    const quotation = await this.expensequotationRepository.findOne(
       queryOptions as FindOneOptions<ExpensQuotationEntity>,
     );
-    if (!expensequotation) return null;
-    return expensequotation;
+    
+    if (!quotation) return null;
+    
+    // Solution de secours si les articles ne sont pas chargés
+    if (!quotation.expensearticleQuotationEntries) {
+    }
+    
+    return quotation;
   }
 
   async findAll(query: IQueryObject = {}): Promise<ExpensQuotationEntity[]> {
     const queryBuilder = new QueryBuilder();
     const queryOptions = queryBuilder.build(query);
+    
     return await this.expensequotationRepository.findAll(
       queryOptions as FindManyOptions<ExpensQuotationEntity>,
     );
@@ -149,9 +166,23 @@ export class ExpensQuotationService {
       console.log('Articles received:', createQuotationDto.articleQuotationEntries);
   
       // Valider les articles
-      if (!createQuotationDto.articleQuotationEntries?.length) {
-        throw new Error('No article entries provided');
-      }
+      // Valider les articles
+if (!createQuotationDto.articleQuotationEntries?.length) {
+  throw new Error('No article entries provided');
+}
+
+for (const [index, entry] of createQuotationDto.articleQuotationEntries.entries()) {
+  if (!entry.article?.title) {
+    throw new Error(`Invalid article entry at index ${index}: Title is required`);
+  }
+  
+  if (entry.quantity === undefined || entry.unit_price === undefined) {
+    throw new Error(`Invalid article entry at index ${index}: Quantity and unit price are required`);
+  }
+
+  // Validation supplémentaire pour les articles existants
+ 
+}
   
       for (const [index, entry] of createQuotationDto.articleQuotationEntries.entries()) {
         if (!entry.article?.title || entry.quantity === undefined || entry.unit_price === undefined) {

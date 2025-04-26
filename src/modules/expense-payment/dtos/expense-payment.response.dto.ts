@@ -59,5 +59,4 @@ export class ResponseExpensePaymentDto {
           @IsString()
           @MaxLength(25)
           sequentialNumbr?: string;
-  pdfFileId: any;
 }

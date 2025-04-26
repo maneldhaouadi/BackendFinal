@@ -10,4 +10,17 @@ export class UpdateExpensePaymentInvoiceEntryDto extends ExpenseCreatePaymentInv
     type: Number,
   })
   exchangeRate?: number;
+
+  @ApiProperty({
+    example: '3.3',
+    type: Number,
+  })
+  originalAmount?: number;
+
+  @ApiProperty({
+    example: '1',
+    type: Number,
+  })
+  originalCurrencyId?: number;
+
 }

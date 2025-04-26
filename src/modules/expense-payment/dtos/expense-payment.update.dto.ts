@@ -27,5 +27,7 @@ export class UpdateExpensePaymentDto extends CreateExpensePaymentUploadDto {
     type: Number,
   })
   currencyId?: number;
+  amount: number;
+  fee: number;
  
 }
