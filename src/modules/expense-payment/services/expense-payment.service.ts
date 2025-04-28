@@ -324,8 +324,8 @@ async update(
       throw new BadRequestException('Invalid payment number format. Expected format: PAY-XXXX');
     }
 
-    // 3. Gérer le fichier PDF
-   
+    // 3. Gérer le fichier PDF si nécessaire
+    
 
     // 4. Préparer les données pour la mise à jour
     const paymentData = {
@@ -335,26 +335,145 @@ async update(
       sequentialNumbr,
     };
 
-    // 5. Traiter les entrées de facture
-    if (updatePaymentDto.invoices && updatePaymentDto.invoices.length > 0) {
-      // 5a. Annuler l'impact des anciennes entrées
+    // 5. Traiter les entrées de facture si elles sont fournies
+    if (updatePaymentDto.invoices) {
+      // 5a. Récupérer la devise du paiement
+      const paymentCurrency = await this.currencyService.findOneById(
+        updatePaymentDto.currencyId || existingPayment.currencyId
+      );
+      
+      if (!paymentCurrency) {
+        throw new Error('Payment currency not found');
+      }
+
+      // 5b. Annuler l'impact des anciennes entrées
       await this.revertPaymentImpact(existingPayment.invoices);
 
-      // 5b. Soft delete des anciennes entrées
+      // 5c. Soft delete des anciennes entrées
       await this.expensePaymentInvoiceEntryService.softDeleteMany(
-        existingPayment.invoices.map((entry) => entry.id),
+        existingPayment.invoices.map((entry) => entry.id)
       );
 
-      // 5c. Créer les nouvelles entrées
-      const currency = await this.currencyService.findOneById(paymentData.currencyId);
-      const invoiceEntries = await this.processInvoiceEntries(
-        updatePaymentDto.invoices,
-        paymentData.id,
-        currency,
-        paymentData.convertionRate || 1
+      // 5d. Créer les nouvelles entrées
+      let totalPaymentAmount = 0;
+      const invoiceEntries = await Promise.all(
+        updatePaymentDto.invoices.map(async (entry) => {
+          const invoice = await this.expenseInvoiceService.findOneByCondition({
+            filter: `id||$eq||${entry.expenseInvoiceId}`,
+            join: 'currency',
+          });
+
+          if (!invoice) {
+            throw new Error(`Invoice with ID ${entry.expenseInvoiceId} not found`);
+          }
+
+          // Préparer les fonctions dinero
+          const createDinero = (amount: number) => dinero({
+            amount: createDineroAmountFromFloatWithDynamicCurrency(
+              amount,
+              invoice.currency.digitAfterComma
+            ),
+            precision: invoice.currency.digitAfterComma,
+          });
+
+          const zero = createDinero(0);
+          const tolerance = createDinero(0.01);
+
+          // Calculer le montant existant payé (sans les entrées actuelles)
+          const currentAmountPaid = createDinero(invoice.amountPaid || 0);
+          const invoiceTotal = createDinero(invoice.total);
+          const taxWithholding = createDinero(invoice.taxWithholdingAmount || 0);
+          const remainingBeforePayment = invoiceTotal
+            .subtract(currentAmountPaid)
+            .subtract(taxWithholding);
+
+          // Calculer le nouveau montant
+          let amountInInvoiceCurrency: dinero.Dinero;
+          let amountInPaymentCurrency: dinero.Dinero;
+          let exchangeRate = 1;
+
+          if (invoice.currencyId !== paymentCurrency.id) {
+            exchangeRate = entry.exchangeRate || existingPayment.convertionRate || 1;
+            if (!exchangeRate || exchangeRate <= 0) {
+                throw new Error(`Exchange rate missing or invalid for invoice ${invoice.id}`);
+            }
+
+            amountInPaymentCurrency = createDinero(entry.originalAmount || entry.amount);
+    amountInInvoiceCurrency = amountInPaymentCurrency.multiply(exchangeRate);
+
+    // Enhanced validation with better error reporting
+    const maxAllowedInPaymentCurrency = remainingBeforePayment.divide(exchangeRate);
+    const attemptedAmount = amountInPaymentCurrency.toUnit();
+    const maxAllowed = maxAllowedInPaymentCurrency.toUnit();
+    
+    if (amountInPaymentCurrency.greaterThan(maxAllowedInPaymentCurrency.add(tolerance))) {
+      console.log('Payment validation failed:', {
+          invoiceId: invoice.id,
+          invoiceCurrency: invoice.currency.code,
+          paymentCurrency: paymentCurrency.code,
+          exchangeRate,
+          remainingInInvoiceCurrency: remainingBeforePayment.toUnit(),
+          attemptedPaymentInPaymentCurrency: attemptedAmount,
+          maxAllowedInPaymentCurrency: maxAllowed,
+          attemptedPaymentInInvoiceCurrency: amountInInvoiceCurrency.toUnit()
+      });
+      
+      throw new Error(
+          `Payment of ${attemptedAmount} ${paymentCurrency.code} ` +
+          `(=${amountInInvoiceCurrency.toUnit()} ${invoice.currency.code}) ` +
+          `exceeds remaining amount for invoice ${invoice.id}. ` +
+          `Max allowed: ${maxAllowed} ${paymentCurrency.code} ` +
+          `(=${remainingBeforePayment.toUnit()} ${invoice.currency.code})`
+      );
+  }
+} else {
+            // Même devise
+            amountInInvoiceCurrency = createDinero(entry.amount);
+            amountInPaymentCurrency = amountInInvoiceCurrency;
+          }
+
+          // Ajouter au total du paiement (dans la devise du paiement)
+          totalPaymentAmount += amountInPaymentCurrency.toUnit();
+
+          // Calculer le nouveau montant payé
+          const newAmountPaid = currentAmountPaid.add(amountInInvoiceCurrency);
+          const newRemaining = invoiceTotal.subtract(newAmountPaid).subtract(taxWithholding);
+
+          // Déterminer le nouveau statut
+          let newStatus;
+          if (newAmountPaid.equalsTo(zero)) {
+            newStatus = EXPENSE_INVOICE_STATUS.Unpaid;
+          } else if (newRemaining.lessThanOrEqual(tolerance)) {
+            newStatus = EXPENSE_INVOICE_STATUS.Paid;
+          } else {
+            newStatus = EXPENSE_INVOICE_STATUS.PartiallyPaid;
+          }
+
+          // Mettre à jour la facture
+          await this.expenseInvoiceService.updateFields(invoice.id, {
+            amountPaid: newAmountPaid.toUnit(),
+            status: newStatus,
+          });
+
+          return {
+            paymentId: id,
+            expenseInvoiceId: invoice.id,
+            amount: amountInInvoiceCurrency.toUnit(),
+            originalAmount: amountInPaymentCurrency.toUnit(),
+            originalCurrencyId: paymentCurrency.id,
+            exchangeRate: invoice.currencyId !== paymentCurrency.id ? exchangeRate : 1,
+            digitAfterComma: invoice.currency.digitAfterComma,
+          };
+        })
       );
 
-      await this.expensePaymentInvoiceEntryService.saveMany(invoiceEntries);
+      // Sauvegarder les nouvelles entrées
+      await this.expensePaymentInvoiceEntryService.saveMany(
+        invoiceEntries.filter(entry => entry !== null)
+      );
+
+      // Mettre à jour le montant total du paiement (dans sa devise)
+      paymentData.amount = totalPaymentAmount;
     }
 
     // 6. Gérer les uploads
@@ -504,17 +623,32 @@ private async processInvoiceEntries(
   );
 }
 @Transactional()
-  async softDelete(id: number): Promise<ExpensePaymentEntity> {
-    // Modifiez la méthode findOneByCondition pour bien charger les factures
-const existingPayment = await this.findOneByCondition({
-  filter: `id||$eq||${id}`,
-  join: 'invoices,invoices.expenseInvoice,invoices.originalCurrency,uploads,uploadPdfField',
-});
-    await this.expensePaymentInvoiceEntryService.softDeleteMany(
-      existingPayment.invoices.map((invoice) => invoice.id),
-    );
-    return this.expenesePaymentRepository.softDelete(id);
+async softDelete(id: number): Promise<ExpensePaymentEntity> {
+  // 1. Trouver le paiement avec ses entrées de facture
+  const existingPayment = await this.findOneByCondition({
+    filter: `id||$eq||${id}`,
+    join: 'invoices',
+  });
+
+  // 2. Pour chaque facture associée, la supprimer individuellement
+  for (const invoiceEntry of existingPayment.invoices) {
+    // D'abord supprimer l'entrée de paiement de facture
+    await this.expensePaymentInvoiceEntryService.softDelete(invoiceEntry.id);
+    
+    // Ensuite supprimer la facture elle-même
+    await this.expenseInvoiceService.softDelete(invoiceEntry.expenseInvoiceId);
   }
+
+  // 3. Finalement supprimer le paiement
+  return this.expenesePaymentRepository.softDelete(id);
+}
+@Transactional()
+async softDeleteMany(ids: number[]): Promise<void> {
+  for (const id of ids) {
+    await this.softDelete(id);
+  }
+}
+
 
   async deleteAll() {
     return this.expenesePaymentRepository.deleteAll();

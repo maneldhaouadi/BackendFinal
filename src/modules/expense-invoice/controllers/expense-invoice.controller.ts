@@ -111,20 +111,29 @@ import { ExpenseInvoiceService } from '../services/expense-invoice.service';
       return this.invoiceService.update(id, updateInvoiceDto);
     }
   
-    @ApiParam({
-      name: 'id',
-      type: 'number',
-      required: true,
-    })
     @Delete('/:id')
-    @LogEvent(EVENT_TYPE.BUYING_INVOICE_DELETED)
-    async delete(
-      @Param('id') id: number,
-      @Request() req: ExpressRequest,
-    ): Promise<ExpenseResponseInvoiceDto> {
-      req.logInfo = { id };
-      return this.invoiceService.softDelete(id);
-    }
+@LogEvent(EVENT_TYPE.BUYING_INVOICE_DELETED)
+async delete(
+    @Param('id') id: number,
+    @Request() req: ExpressRequest,
+): Promise<{ 
+    invoice: ExpenseResponseInvoiceDto;
+    quotationDeleted: boolean;
+    quotationSequential?: string;
+}> {
+    req.logInfo = { id };
+    const result = await this.invoiceService.softDelete(id);
+    
+    // Manual mapping if DTO constructor doesn't accept parameters
+    const invoiceDto = new ExpenseResponseInvoiceDto();
+    Object.assign(invoiceDto, result.invoice);
+    
+    return {
+        invoice: invoiceDto,
+        quotationDeleted: result.quotationDeleted,
+        quotationSequential: result.quotationSequential
+    };
+}
 
     @Delete(':id/pdf')
     async deletePdfFile(@Param('id') id: number): Promise<void> {

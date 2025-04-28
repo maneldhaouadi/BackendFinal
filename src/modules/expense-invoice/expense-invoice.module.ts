@@ -17,6 +17,8 @@ import { ExpenseInvoiceUploadService } from './services/expense-invoice-upload.s
 import { ExpenseArticleInvoiceEntryService } from './services/expense-article-invoice-entry.service';
 import { ExpenseArticleInvoiceEntryTaxService } from './services/expense-article-invoice-entry-tax.service';
 import { ExpenseInvoiceRepositoryModule } from './repositories/expense-invoice.repository.module';
+import { ExpensQuotationService } from '../expense_quotation/services/expensquotation.service';
+import { ExpenseQuotationModule } from '../expense_quotation/expensquotation.module';
 
 @Module({
   controllers: [],
@@ -45,6 +47,7 @@ import { ExpenseInvoiceRepositoryModule } from './repositories/expense-invoice.r
     GatewaysModule,
     CalculationsModule,
     StorageModule,
+    ExpenseQuotationModule
   ],
 })
 export class ExpenseInvoiceModule {}

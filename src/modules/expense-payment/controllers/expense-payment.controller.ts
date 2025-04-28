@@ -88,6 +88,7 @@ export class ExpensePaymentController {
     return this.expensePaymentService.update(id, updateActivityDto);
   }
 
+
   @ApiParam({
     name: 'id',
     type: 'number',
@@ -102,8 +103,4 @@ export class ExpensePaymentController {
     req.logInfo = { id };
     return this.expensePaymentService.softDelete(id);
   }
-  @Delete(':id/pdf')
-async deletePdfFile(@Param('id') id: number): Promise<void> {
-  await this.expensePaymentService.deletePdfFile(id);
-}
 }
