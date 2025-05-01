@@ -39,7 +39,7 @@ import { ExpensQuotationEntity } from '../repositories/entities/expensquotation.
 export class ExpensQuotationController {
   constructor(
     private readonly expensQuotationService: ExpensQuotationService,
-  ) {}
+  ) {}/*
 
   @Get('/all')
 async findAll(
@@ -161,6 +161,6 @@ async deletePdfFile(@Param('id') id: number): Promise<void> {
     return this.expensQuotationService.updateQuotationStatusIfExpired(quotationId); // Appelez la méthode du service
   }
 
-
+*/
  
 }

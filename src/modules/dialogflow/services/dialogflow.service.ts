@@ -39,7 +39,7 @@ export class DialogflowService {
     private readonly historyRepository: HistoryRepository,
 
   ) {
-    const filePath = 'src/projetadopet-9d2f2-7bd0022ebee4.json';
+   /* const filePath = 'src/projetadopet-9d2f2-7bd0022ebee4.json';
     try {
       const fileContent = fs.readFileSync(filePath, 'utf8');
       this.CREDENTIALS = JSON.parse(fileContent);
@@ -1473,7 +1473,7 @@ private compareStatus(document: any, userValue: string | number, lang: string) {
   return {
     success: true,
     message: `${statusMessage}\n${comparisonMessage}`
-  };
+  };*/
 }
 
 }

@@ -21,7 +21,7 @@ export class ExpensePaymentInvoiceEntryService {
     private readonly expensePaymentInvoiceEntryRepository: ExpensePaymentInvoiceEntryRepository,
     private readonly expenseInvoiceService: ExpenseInvoiceService,
   ) {}
-
+/*
   async findOneByCondition(query: IQueryObject): Promise<ExpensePaymentInvoiceEntryEntity | null> {
     const queryBuilder = new QueryBuilder();
     const queryOptions = queryBuilder.build(query);
@@ -383,5 +383,5 @@ private async updateInvoiceStatus(
     for (const id of ids) {
       await this.softDelete(id);
     }
-  }
+  }*/
 }

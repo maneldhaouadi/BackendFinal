@@ -31,7 +31,7 @@ import { ExpenseCreatePaymentDto } from '../dtos/expense-payment.create.dto';
 @UseInterceptors(LogInterceptor)
 export class ExpensePaymentController {
   constructor(private readonly expensePaymentService: ExpensePaymentService) {}
-
+/*
   @Get('/all')
   async findAll(@Query() options: IQueryObject): Promise<ResponseExpensePaymentDto[]> {
     return this.expensePaymentService.findAll(options);
@@ -102,5 +102,5 @@ export class ExpensePaymentController {
   ): Promise<ResponseExpensePaymentDto> {
     req.logInfo = { id };
     return this.expensePaymentService.softDelete(id);
-  }
+  }*/
 }

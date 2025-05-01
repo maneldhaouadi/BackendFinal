@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ConflictException, InternalServerErrorException } from '@nestjs/common';
 import { PageDto } from 'src/common/database/dtos/database.page.dto';
 import { PageMetaDto } from 'src/common/database/dtos/database.page-meta.dto';
 import { ArticleRepository } from '../repositories/repository/article.repository';
@@ -7,20 +7,19 @@ import { ResponseArticleDto } from '../dtos/article.response.dto';
 import { CreateArticleDto } from '../dtos/article.create.dto';
 import { UpdateArticleDto } from '../dtos/article.update.dto';
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
-import { FindManyOptions, FindOneOptions, ILike, LessThanOrEqual, Like, MoreThanOrEqual } from 'typeorm';
+import { DataSource, DeepPartial, FindManyOptions, FindOneOptions, ILike, In, LessThan, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { QueryBuilder } from 'src/common/database/utils/database-query-builder';
 import { Readable } from 'stream';
 import * as xlsx from 'xlsx';
 import { ArticleHistoryService } from 'src/modules/article-history/services/article-history.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ArticleHistoryEntity } from 'src/modules/article-history/repositories/entities/article-history.entity';
-import path from 'path';
-import { PdfService } from 'src/common/pdf/services/pdf.service';
 import * as fs from 'fs';
 import { TextSimilarityService } from './TextSimilarityService';
-import { ArticleData, ArticleOcrService } from 'src/modules/ocr/services/articleOcrService';
-import { createWorker } from 'tesseract.js';
 import { PdfExtractionService } from 'src/modules/pdf-extraction/services/pdf-extraction.service';
+import { PdfService } from 'src/common/pdf/services/pdf.service';
+import { ArticleOcrService } from 'src/modules/ocr/services/articleOcrService';
+import { ArticleStatus } from '../interfaces/article-data.interface';
 
 @Injectable()
 export class ArticleService {
@@ -30,43 +29,777 @@ export class ArticleService {
     private readonly pdfService: PdfService,
     private readonly textSimilarityService: TextSimilarityService,
     private readonly articleOcrService: ArticleOcrService,
-   
-    private readonly  pdfExtractionService:  PdfExtractionService,
+    private readonly pdfExtractionService: PdfExtractionService,
+    private dataSource: DataSource // Injection du DataSource
 
   ) {}
-  //////////////////////////////////////pdf 
 
-  async createFromPdfData(pdfData: ArticleData): Promise<ArticleEntity> {
-    // Valider les données obligatoires
-    if (!pdfData.title || !pdfData.category) {
-      throw new BadRequestException('Le titre et la catégorie sont obligatoires');
+  async updateStatus(id: number, newStatus: ArticleStatus): Promise<ArticleEntity> {
+    const article = await this.findOneById(id);
+    
+    // Vérification des transitions autorisées
+    if (!this.isStatusTransitionValid(article.status, newStatus)) {
+      throw new BadRequestException(
+        `Transition de statut invalide: ${article.status} -> ${newStatus}`
+      );
     }
   
-    // Créer le DTO à partir des données PDF
+    // Vérifications spécifiques selon le nouveau statut
+    if (newStatus === 'active') {
+      if (!article.title || !article.reference) {
+        throw new BadRequestException(
+          'Un article actif doit avoir un titre et une référence'
+        );
+      }
+    }
+  
+    // Inclure la référence existante dans la mise à jour
+    return this.update(id, { 
+      status: newStatus,
+      reference: article.reference // Ajout de la référence existante
+    });
+  }
+  
+  
+  async checkAndUpdateStockStatus(): Promise<void> {
+    const articles = await this.articleRepository.find({
+      where: { status: In(['active', 'out_of_stock']) }
+    });
+  
+    const updates = articles.map(async article => {
+      if (article.quantityInStock <= 0 && article.status !== 'out_of_stock') {
+        await this.update(article.id, { 
+          status: 'out_of_stock',
+          reference: article.reference 
+        });
+      } else if (article.quantityInStock > 0 && article.status === 'out_of_stock') {
+        await this.update(article.id, { 
+          status: 'active',
+          reference: article.reference 
+        });
+      }
+    });
+  
+    await Promise.all(updates);
+  }
+  
+  async suggestArchiving(): Promise<ArticleEntity[]> {
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  
+    const candidates = await this.articleRepository.find({
+      where: [
+        { 
+          status: 'inactive',
+          updatedAt: LessThan(sixMonthsAgo) 
+        },
+        { 
+          status: 'out_of_stock',
+          updatedAt: LessThan(sixMonthsAgo) 
+        }
+      ]
+    });
+  
+    return candidates;
+  }
+
+  private handleSaveError(error: any, reference?: string): never {
+    if (error.code === 'ER_DUP_ENTRY' || error.message.includes('Duplicate entry')) {
+      throw new ConflictException(
+        reference 
+          ? `La référence '${reference}' existe déjà`
+          : 'Une ou plusieurs références existent déjà'
+      );
+    }
+    throw error;
+  }
+
+  async save(
+    createArticleDto: CreateArticleDto & { justificatifFile?: Express.Multer.File }
+  ): Promise<ArticleEntity> {
+    const articleData: DeepPartial<ArticleEntity> = {
+      title: createArticleDto.title,
+      description: createArticleDto.description,
+      reference: createArticleDto.reference,
+      quantityInStock: createArticleDto.quantityInStock,
+      unitPrice: createArticleDto.unitPrice,
+      status: createArticleDto.status as ArticleStatus || 'draft', // Conversion explicite ici
+      notes: createArticleDto.notes,
+    };
+
+    if (createArticleDto.justificatifFile) {
+      articleData.justificatifFile = createArticleDto.justificatifFile.buffer;
+      articleData.justificatifFileName = createArticleDto.justificatifFile.originalname;
+      articleData.justificatifMimeType = createArticleDto.justificatifFile.mimetype;
+      articleData.justificatifFileSize = createArticleDto.justificatifFile.size;
+    }
+
+    try {
+      const article = this.articleRepository.create(articleData);
+      return await this.articleRepository.save(article);
+    } catch (error) {
+      this.handleSaveError(error, createArticleDto.reference);
+    }
+  }
+
+  async saveMany(
+    createArticleDtos: (CreateArticleDto & { justificatifFile?: Express.Multer.File })[]
+  ): Promise<ArticleEntity[]> {
+    try {
+      return await Promise.all(
+        createArticleDtos.map(async dto => {
+          const entity = this.articleRepository.create({
+            title: dto.title,
+            description: dto.description,
+            reference: dto.reference,
+            quantityInStock: dto.quantityInStock,
+            unitPrice: dto.unitPrice,
+            status: (dto.status as ArticleStatus) || 'draft',
+            notes: dto.notes,
+            ...(dto.justificatifFile && {
+              justificatifFile: dto.justificatifFile.buffer,
+              justificatifFileName: dto.justificatifFile.originalname,
+              justificatifMimeType: dto.justificatifFile.mimetype,
+              justificatifFileSize: dto.justificatifFile.size
+            })
+          });
+          return this.articleRepository.save(entity);
+        })
+      );
+    } catch (error) {
+      this.handleSaveError(error);
+    }
+  }
+
+  async findAll(
+    query: IQueryObject,
+  ): Promise<{ total: number }> {
+    const queryBuilder = new QueryBuilder();
+    const queryOptions = queryBuilder.build(query);
+    const total = await this.articleRepository.getTotalCount({
+      where: queryOptions.where,
+    });
+    return { total };
+  }
+
+  async findAllPaginated(
+    query: IQueryObject,
+  ): Promise<PageDto<ResponseArticleDto>> {
+    const queryBuilder = new QueryBuilder();
+    const queryOptions = queryBuilder.build(query);
+    const count = await this.articleRepository.getTotalCount({
+      where: queryOptions.where,
+    });
+  
+    const entities = await this.articleRepository.findAll(
+      queryOptions as FindManyOptions<ArticleEntity>,
+    );
+  
+    const responseDtos: ResponseArticleDto[] = entities.map(entity => {
+      const dto: ResponseArticleDto = {
+        id: entity.id,
+        title: entity.title ?? undefined,
+        description: entity.description ?? undefined,
+        reference: entity.reference,
+        quantityInStock: entity.quantityInStock,
+        unitPrice: entity.unitPrice,
+        status: entity.status,
+        version: entity.version,
+        notes: entity.notes ?? undefined,
+        createdAt: entity.createdAt,
+        updatedAt: entity.updatedAt,
+        deletedAt: entity.deletedAt ?? undefined,
+        isDeletionRestricted: entity.isDeletionRestricted ?? undefined,
+      };
+  
+      if (entity.justificatifFile) {
+        dto.justificatifFile = {
+          data: entity.justificatifFile,
+          filename: entity.justificatifFileName ?? undefined,
+          mimeType: entity.justificatifMimeType ?? undefined,
+          size: entity.justificatifFileSize ?? undefined
+        };
+      }
+
+      if (entity.history) {
+        dto.history = entity.history.map(historyItem => ({
+          version: historyItem.version,
+          changes: historyItem.changes,
+          date: historyItem.date
+        }));
+      }
+  
+      return dto;
+    });
+  
+    const pageMetaDto = new PageMetaDto({
+      pageOptionsDto: {
+        page: parseInt(query.page),
+        take: parseInt(query.limit),
+      },
+      itemCount: count,
+    });
+  
+    return new PageDto(responseDtos, pageMetaDto);
+  }
+
+  async update(
+    id: number,
+    updateData: UpdateArticleDto & { 
+      justificatifFile?: Express.Multer.File;
+    }
+  ): Promise<ArticleEntity> {
+    const article = await this.findOneById(id);
+    
+    const updatePayload: Partial<ArticleEntity> = {
+      ...updateData,
+      version: article.version + 1
+    };
+  
+    if (updateData.justificatifFile) {
+      updatePayload.justificatifFile = updateData.justificatifFile.buffer;
+      updatePayload.justificatifFileName = updateData.justificatifFile.originalname;
+      updatePayload.justificatifMimeType = updateData.justificatifFile.mimetype;
+      updatePayload.justificatifFileSize = updateData.justificatifFile.size;
+    }
+  
+    const changes = this.getChanges(article, updatePayload);
+    
+    await this.articleHistoryService.createHistoryEntry({
+      version: updatePayload.version,
+      changes,
+      articleId: id
+    });
+  
+    await this.articleRepository.update(id, updatePayload);
+    
+    return this.articleRepository.findOneById(id) as Promise<ArticleEntity>;
+  }
+
+  private getChanges(
+    existingArticle: ArticleEntity,
+    newData: Partial<ArticleEntity>,
+  ): Record<string, { oldValue: any; newValue: any }> {
+    const changes: Record<string, { oldValue: any; newValue: any }> = {};
+  
+    for (const key in newData) {
+      if (newData[key] !== undefined && 
+          existingArticle[key] !== newData[key] &&
+          key !== 'version') {
+        changes[key] = {
+          oldValue: existingArticle[key],
+          newValue: newData[key]
+        };
+      }
+    }
+  
+    return changes;
+  }
+
+  async findOneById(id: number): Promise<ArticleEntity> {
+    const article = await this.articleRepository.findOne({ 
+      where: { id },
+      relations: ['history'] 
+    });
+    
+    if (!article) {
+      throw new NotFoundException(`Article avec ID ${id} non trouvé`);
+    }
+    return article;
+  }
+  
+  async softDelete(id: number): Promise<ArticleEntity> {
+    const article = await this.findOneById(id);
+    await this.articleRepository.softDelete(id);
+    return article;
+  }
+  
+  async getArticleDetails(id: number): Promise<ArticleEntity> {
+    return this.findOneById(id);
+  }
+  
+  async deleteAll(): Promise<void> {
+    await this.articleRepository.deleteAll();
+  }
+
+  async findOneByCondition(
+    query: IQueryObject,
+  ): Promise<ResponseArticleDto | null> {
+    const queryBuilder = new QueryBuilder();
+    const queryOptions = queryBuilder.build(query);
+    
+    const article = await this.articleRepository.findOne({
+      ...queryOptions,
+      relations: ['history']
+    } as FindOneOptions<ArticleEntity>);
+  
+    if (!article) {
+      return null;
+    }
+  
+    return this.mapToResponseDto(article);
+  }
+
+  private mapToResponseDto(entity: ArticleEntity): ResponseArticleDto {
+    return {
+      id: entity.id,
+      title: entity.title,
+      description: entity.description,
+      reference: entity.reference,
+      quantityInStock: entity.quantityInStock,
+      unitPrice: entity.unitPrice,
+      status: entity.status,
+      version: entity.version,
+      notes: entity.notes,
+      justificatifFile: entity.justificatifFile ? {
+        data: entity.justificatifFile,
+        filename: entity.justificatifFileName,
+        mimeType: entity.justificatifMimeType,
+        size: entity.justificatifFileSize
+      } : undefined,
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt,
+      deletedAt: entity.deletedAt,
+      isDeletionRestricted: entity.isDeletionRestricted,
+      history: entity.history?.map(history => ({
+        version: history.version,
+        changes: history.changes,
+        date: history.date
+      }))
+    };
+  }
+
+  async restoreArticleVersion(articleId: number, targetVersion: number): Promise<ArticleEntity> {
+    // Utilisation d'une transaction pour garantir l'intégrité des données
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+        // 1. Récupérer l'article actuel (sans l'historique pour économiser la mémoire)
+        const currentArticle = await queryRunner.manager.findOne(ArticleEntity, {
+            where: { id: articleId }
+        });
+        
+        if (!currentArticle) {
+            throw new NotFoundException('Article non trouvé');
+        }
+
+        // 2. Récupérer uniquement la version cible (optimisation)
+        const targetVersionEntry = await queryRunner.manager.findOne(ArticleHistoryEntity, {
+            where: {
+                article: { id: articleId }, // Utilisez la relation au lieu de articleId directement
+                version: targetVersion
+            }
+        });
+
+        if (!targetVersionEntry) {
+            throw new NotFoundException(`Version ${targetVersion} non trouvée`);
+        }
+
+        // 3. Préparer l'article restauré
+        const restoredArticle = this.articleRepository.create({
+            ...currentArticle,
+            version: currentArticle.version + 1,
+            updatedAt: new Date()
+        });
+
+        // 4. Appliquer les changements avec une vérification de type
+        const changes = targetVersionEntry.changes as Record<string, { oldValue: any; newValue: any }>;
+        for (const [field, change] of Object.entries(changes)) {
+            if (field in restoredArticle && field !== 'id') {
+                restoredArticle[field] = this.convertFieldValue(field, change.oldValue);
+            }
+        }
+
+        // 5. Enregistrer les changements dans l'historique
+        const newChanges = this.getChanges(currentArticle, restoredArticle);
+        const newHistoryEntry = queryRunner.manager.create(ArticleHistoryEntity, {
+            version: restoredArticle.version,
+            changes: newChanges,
+            article: { id: articleId } // Utilisez la relation
+        });
+
+        // 6. Sauvegarder tout dans la transaction
+        await queryRunner.manager.save(restoredArticle);
+        await queryRunner.manager.save(newHistoryEntry);
+
+        await queryRunner.commitTransaction();
+
+        // 7. Retourner l'article avec son historique
+        return this.articleRepository.findOne({
+            where: { id: articleId },
+            relations: ['history']
+        });
+    } catch (error) {
+        await queryRunner.rollbackTransaction();
+        throw error;
+    } finally {
+        await queryRunner.release();
+    }
+}
+
+
+  private convertFieldValue(field: string, value: any): any {
+    switch(field) {
+      case 'quantityInStock':
+        return parseInt(value, 10);
+      case 'unitPrice':
+        return parseFloat(value);
+      case 'status':
+        return String(value);
+      default:
+        return value;
+    }
+  }
+  
+  async getAvailableVersions(articleId: number): Promise<Array<{ version: number; date?: Date }>> {
+    const article = await this.articleRepository.findOne({ 
+      where: { id: articleId }
+    });
+    if (!article) {
+      throw new NotFoundException('Article non trouvé');
+    }
+  
+    const history = await this.articleHistoryService.getArticleHistory(articleId);
+    const versions = history.map(entry => ({
+      version: entry.version,
+      date: entry.date
+    }));
+  
+    if (!versions.some(v => v.version === article.version)) {
+      versions.push({
+        version: article.version,
+        date: article.updatedAt || article.createdAt
+      });
+    }
+  
+    return versions.sort((a, b) => b.version - a.version);
+  }
+
+// ==============================================
+  // PARTIE STATISTIQUES SIMPLIFIÉES
+  // ==============================================
+
+  async getSimpleStats() {
+    // 1. Récupérer tous les articles en une seule requête
+    const allArticles = await this.articleRepository.find();
+    
+    // 2. Calculer les statistiques de base
+    const stats = {
+      totalArticles: allArticles.length,
+      statusCounts: {},
+      statusPercentages: {},
+      outOfStockCount: 0,
+      totalStockValue: 0,
+      averageStock: 0,
+      lowStockCount: 0,
+      topStockValueArticles: [],
+      toArchiveSuggestions: []
+    };
+
+    // 3. Calcul des valeurs
+    allArticles.forEach(article => {
+      // Comptage par statut
+      stats.statusCounts[article.status] = (stats.statusCounts[article.status] || 0) + 1;
+      
+      // Stock
+      stats.totalStockValue += article.quantityInStock * article.unitPrice;
+      
+      // Rupture de stock
+      if (article.quantityInStock === 0) {
+        stats.outOfStockCount++;
+      }
+      
+      // Stock faible (entre 1 et 5)
+      if (article.quantityInStock > 0 && article.quantityInStock <= 5) {
+        stats.lowStockCount++;
+      }
+    });
+
+    // 4. Calcul des pourcentages
+    for (const status in stats.statusCounts) {
+      stats.statusPercentages[status] = 
+        ((stats.statusCounts[status] / stats.totalArticles) * 100).toFixed(2) + '%';
+    }
+
+    // 5. Stock moyen
+    stats.averageStock = stats.totalStockValue / stats.totalArticles;
+
+    // 6. Top 5 des articles par valeur de stock
+    stats.topStockValueArticles = allArticles
+      .map(a => ({
+        reference: a.reference,
+        title: a.title,
+        value: a.quantityInStock * a.unitPrice
+      }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5);
+
+    // 7. Articles à archiver (inactifs depuis +6 mois)
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    
+    stats.toArchiveSuggestions = allArticles
+      .filter(a => a.status === 'inactive' && a.updatedAt < sixMonthsAgo)
+      .map(a => a.reference);
+
+    return stats;
+  }
+
+  async getStockAlerts() {
+    const allArticles = await this.articleRepository.find();
+    
+    return {
+      outOfStock: allArticles
+        .filter(a => a.quantityInStock === 0)
+        .map(a => ({
+          reference: a.reference,
+          title: a.title,
+          daysOutOfStock: Math.floor((new Date().getTime() - a.updatedAt.getTime()) / (1000 * 3600 * 24))
+        })),
+      
+      lowStock: allArticles
+        .filter(a => a.quantityInStock > 0 && a.quantityInStock <= 5)
+        .map(a => ({
+          reference: a.reference,
+          title: a.title,
+          remainingStock: a.quantityInStock
+        }))
+    };
+  }
+
+  async getStatusOverview() {
+    const allArticles = await this.articleRepository.find();
+    const overview = {
+      counts: {},
+      examples: {}
+    };
+
+    allArticles.forEach(article => {
+      // Comptage par statut
+      overview.counts[article.status] = (overview.counts[article.status] || 0) + 1;
+      
+      // Garder 2 exemples par statut
+      if (!overview.examples[article.status]) {
+        overview.examples[article.status] = [];
+      }
+      if (overview.examples[article.status].length < 2) {
+        overview.examples[article.status].push({
+          reference: article.reference,
+          title: article.title
+        });
+      }
+    });
+
+    return overview;
+  }
+
+
+
+  //////////////////////// prédiction 
+  // Dans ArticleService
+
+async getArticleQualityScores(): Promise<{
+  scores: Array<{
+    id: number;
+    reference: string;
+    title?: string;
+    score: number;
+    missingFields: string[];
+  }>;
+  incompleteArticles: Array<{
+    id: number;
+    reference: string;
+    title?: string;
+    score: number;
+  }>;
+}> {
+  const allArticles = await this.articleRepository.find();
+  
+  const results = allArticles.map(article => {
+    const missingFields = [];
+    let score = 0;
+
+    // Critères de qualité
+    if (article.description) score += 25; else missingFields.push('description');
+    if (article.justificatifFile) score += 25; else missingFields.push('justificatif');
+    if (article.notes) score += 25; else missingFields.push('notes');
+    if (article.quantityInStock > 0) score += 25; else missingFields.push('stock');
+
+    return {
+      id: article.id,
+      reference: article.reference,
+      title: article.title,
+      score,
+      missingFields
+    };
+  });
+
+  return {
+    scores: results,
+    incompleteArticles: results
+      .filter(item => item.score < 100)
+      .sort((a, b) => a.score - b.score)
+  };
+}
+
+// Dans ArticleService
+
+async detectSuspiciousArticles(): Promise<{
+  zeroPrice: Array<{ id: number; reference: string; title?: string }>;
+  highStock: Array<{ id: number; reference: string; title?: string; quantity: number }>;
+  invalidReference: Array<{ id: number; reference: string; title?: string }>;
+}> {
+  const allArticles = await this.articleRepository.find();
+  const referenceRegex = /^[A-Z0-9]{3,}-[0-9]{3,}$/; // Exemple: ABC-123
+
+  return {
+    zeroPrice: allArticles
+      .filter(a => a.unitPrice === 0)
+      .map(a => ({ id: a.id, reference: a.reference, title: a.title })),
+
+    highStock: allArticles
+      .filter(a => a.quantityInStock > 10000)
+      .map(a => ({ 
+        id: a.id, 
+        reference: a.reference, 
+        title: a.title, 
+        quantity: a.quantityInStock 
+      })),
+
+    invalidReference: allArticles
+      .filter(a => !referenceRegex.test(a.reference))
+      .map(a => ({ id: a.id, reference: a.reference, title: a.title }))
+  };
+}
+
+// Dans ArticleService
+
+async comparePriceTrends(): Promise<{
+  oldArticles: {
+    count: number;
+    averagePrice: number;
+  };
+  newArticles: {
+    count: number;
+    averagePrice: number;
+  };
+  priceEvolution: {
+    amount: number;
+    percentage: number;
+    trend: 'up' | 'down' | 'stable';
+  };
+}> {
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+  const allArticles = await this.articleRepository.find();
+  
+  const oldArticles = allArticles.filter(a => a.createdAt < oneYearAgo);
+  const newArticles = allArticles.filter(a => a.createdAt >= oneYearAgo);
+
+  const avgOld = oldArticles.reduce((sum, a) => sum + a.unitPrice, 0) / (oldArticles.length || 1);
+  const avgNew = newArticles.reduce((sum, a) => sum + a.unitPrice, 0) / (newArticles.length || 1);
+
+  const amountDiff = avgNew - avgOld;
+  const percentDiff = (amountDiff / avgOld) * 100;
+
+  return {
+    oldArticles: {
+      count: oldArticles.length,
+      averagePrice: parseFloat(avgOld.toFixed(2))
+    },
+    newArticles: {
+      count: newArticles.length,
+      averagePrice: parseFloat(avgNew.toFixed(2))
+    },
+    priceEvolution: {
+      amount: parseFloat(amountDiff.toFixed(2)),
+      percentage: parseFloat(percentDiff.toFixed(2)),
+      trend: amountDiff > 0 ? 'up' : amountDiff < 0 ? 'down' : 'stable'
+    }
+  };
+}
+
+//
+// In ArticleService
+public isStatusTransitionValid(currentStatus: ArticleStatus, newStatus: ArticleStatus): boolean {
+  const validTransitions: Record<ArticleStatus, ArticleStatus[]> = {
+    draft: ['active', 'pending_review'],
+    pending_review: ['draft', 'active'],
+    active: ['inactive', 'out_of_stock'],
+    inactive: ['active', 'archived'],
+    out_of_stock: ['active', 'archived'],
+    archived: [], // Aucune transition possible depuis archived
+    deleted: [] // Aucune transition possible depuis deleted
+  };
+
+  return validTransitions[currentStatus].includes(newStatus);
+}
+
+// Dans ArticleService
+
+async getStockHealth(): Promise<{
+  activePercentage: number;
+  status: 'poor' | 'medium' | 'good';
+  details: Record<string, number>;
+}> {
+  const allArticles = await this.articleRepository.find();
+  const statusCounts = {};
+
+  allArticles.forEach(a => {
+    statusCounts[a.status] = (statusCounts[a.status] || 0) + 1;
+  });
+
+  const activePercentage = (statusCounts['active'] || 0) / allArticles.length * 100;
+
+  return {
+    activePercentage: parseFloat(activePercentage.toFixed(2)),
+    status: activePercentage < 30 ? 'poor' : 
+            activePercentage < 70 ? 'medium' : 'good',
+    details: statusCounts
+  };
+}
+
+  
+
+
+/*
+ 
+  /////////////////////////////////////////////////////
+
+
+
+
+
+
+
+
+  // PDF Related Methods
+ /* async createFromPdfData(pdfData: ArticleData): Promise<ArticleEntity> {
+    if (!pdfData.title || !pdfData.reference) {
+      throw new BadRequestException('Le titre et la référence sont obligatoires');
+    }
+
     const createArticleDto: CreateArticleDto = {
       title: pdfData.title,
       description: pdfData.description || '',
-      category: pdfData.category,
-      subCategory: pdfData.subCategory || '',
-      purchasePrice: pdfData.purchasePrice || 0,
-      salePrice: pdfData.salePrice || 0,
+      reference: pdfData.reference,
       quantityInStock: pdfData.quantityInStock || 0,
       status: pdfData.status || 'draft'
     };
-  
-    // Vérifier si l'article existe déjà
+
     const existingArticle = await this.articleRepository.findOne({
-      where: { title: createArticleDto.title }
+      where: { reference: createArticleDto.reference }
     });
-  
+
     if (existingArticle) {
-      throw new BadRequestException('Un article avec ce titre existe déjà');
+      throw new BadRequestException('Un article avec cette référence existe déjà');
     }
-  
-    // Créer et sauvegarder le nouvel article
+
     return this.save(createArticleDto);
   }
-
 
   async comparePdfWithArticle(
     articleId: number,
@@ -76,277 +809,198 @@ export class ArticleService {
     differences: Record<string, { articleValue: any; pdfValue: any }>;
     similarityScore: number;
   }> {
-    try {
-      // 1. Récupérer l'article existant
-      const article = await this.findOneById(articleId);
-      
-      // 2. Extraire les données du PDF
-      const pdfData = await this.pdfExtractionService.extractArticleDataFromPdf(pdfPath);
-      
-      // 3. Comparer les champs
-      const fieldsToCompare = [
-        'title', 'description', 'category', 'subCategory',
-        'purchasePrice', 'salePrice', 'quantityInStock', 'status'
-      ];
-      
-      const matches: Record<string, boolean> = {};
-      const differences: Record<string, { articleValue: any; pdfValue: any }> = {};
-      let matchingFields = 0;
-  
-      fieldsToCompare.forEach(field => {
-        const articleValue = article[field];
-        const pdfValue = pdfData[field];
-  
-        // Conversion pour les champs numériques
-        if (field.includes('Price') || field === 'quantityInStock') {
-          const numPdfValue = typeof pdfValue === 'string' ? 
-            parseFloat(pdfValue.replace(',', '.')) : 
-            Number(pdfValue);
-          
-          const numArticleValue = Number(articleValue);
-          
-          matches[field] = Math.abs(numArticleValue - numPdfValue) < 0.01;
-        } else {
-          // Comparaison de texte (insensible à la casse et aux espaces)
-          const normalizedArticle = String(articleValue || '').trim().toLowerCase();
-          const normalizedPdf = String(pdfValue || '').trim().toLowerCase();
-          matches[field] = normalizedArticle === normalizedPdf;
-        }
-  
-        if (!matches[field]) {
-          differences[field] = {
-            articleValue: article[field],
-            pdfValue: pdfData[field]
-          };
-        } else {
-          matchingFields++;
-        }
-      });
-  
-      // Calcul du score de similarité (en pourcentage)
-      const similarityScore = (matchingFields / fieldsToCompare.length) * 100;
-  
-      return {
-        matches,
-        differences,
-        similarityScore: Math.round(similarityScore * 100) / 100 // Arrondi à 2 décimales
-      };
-    } catch (error) {
-      throw new Error(`Erreur lors de la comparaison: ${error.message}`);
+    const article = await this.findOneById(articleId);
+    const pdfData = await this.pdfExtractionService.extractArticleDataFromPdf(pdfPath);
+    
+    const fieldsToCompare = [
+      'title', 'description', 'reference', 'quantityInStock', 'status'
+    ];
+    
+    const matches: Record<string, boolean> = {};
+    const differences: Record<string, { articleValue: any; pdfValue: any }> = {};
+    let matchingFields = 0;
+
+    fieldsToCompare.forEach(field => {
+      const articleValue = article[field];
+      const pdfValue = pdfData[field];
+
+      if (field === 'quantityInStock') {
+        const numPdfValue = Number(pdfValue);
+        matches[field] = articleValue === numPdfValue;
+      } else {
+        const normalizedArticle = String(articleValue || '').trim().toLowerCase();
+        const normalizedPdf = String(pdfValue || '').trim().toLowerCase();
+        matches[field] = normalizedArticle === normalizedPdf;
+      }
+
+      if (!matches[field]) {
+        differences[field] = {
+          articleValue: article[field],
+          pdfValue: pdfData[field]
+        };
+      } else {
+        matchingFields++;
+      }
+    });
+
+    const similarityScore = (matchingFields / fieldsToCompare.length) * 100;
+    return {
+      matches,
+      differences,
+      similarityScore: Math.round(similarityScore * 100) / 100
+    };
+  }
+
+  // OCR Related Methods
+  async createFromOcrData(ocrData: ArticleData): Promise<ArticleEntity> {
+    if (!ocrData.title || !ocrData.reference) {
+      throw new BadRequestException('Le titre et la référence sont obligatoires');
     }
+
+    const createArticleDto: CreateArticleDto = {
+      title: ocrData.title,
+      description: ocrData.description || '',
+      reference: ocrData.reference,
+      quantityInStock: ocrData.quantityInStock || 0,
+      status: ocrData.status || 'draft'
+    };
+
+    const existingArticle = await this.articleRepository.findOne({
+      where: { reference: createArticleDto.reference }
+    });
+
+    if (existingArticle) {
+      throw new BadRequestException('Un article avec cette référence existe déjà');
+    }
+
+    return this.save(createArticleDto);
   }
 
-
-
-  ///////////////
-
-  //ocr part 
-
-  // Dans article.service.ts
-
-async createFromOcrData(ocrData: ArticleData): Promise<ArticleEntity> {
-  // Valider les données obligatoires
-  if (!ocrData.title || !ocrData.category) {
-    throw new BadRequestException('Le titre et la catégorie sont obligatoires');
-  }
-  
-
-  // Créer le DTO à partir des données OCR
-  const createArticleDto: CreateArticleDto = {
-    title: ocrData.title,
-    description: ocrData.description || '',
-    category: ocrData.category,
-    subCategory: ocrData.subCategory || '',
-    purchasePrice: ocrData.purchasePrice || 0,
-    salePrice: ocrData.salePrice || 0,
-    quantityInStock: ocrData.quantityInStock || 0,
-    status: ocrData.status || 'draft'
-  };
-
-  // Vérifier si l'article existe déjà
-  const existingArticle = await this.articleRepository.findOne({
-    where: { title: createArticleDto.title }
-  });
-
-  if (existingArticle) {
-    throw new BadRequestException('Un article avec ce titre existe déjà');
-  }
-
-  // Créer et sauvegarder le nouvel article
-  return this.save(createArticleDto);
-}
-
-
-///////////////////////////////////////
-async searchByOcrData(ocrData: ArticleData): Promise<ArticleEntity[]> {
-  try {
-    // Construction des conditions de recherche
+  async searchByOcrData(ocrData: ArticleData): Promise<ArticleEntity[]> {
     const whereClauses = [];
     
     if (ocrData.title) {
       whereClauses.push({ title: ILike(`%${ocrData.title}%`) });
     }
     
-    if (ocrData.category) {
-      whereClauses.push({ category: ILike(`%${ocrData.category}%`) });
-    }
-    
-    if (ocrData.subCategory) {
-      whereClauses.push({ subCategory: ILike(`%${ocrData.subCategory}%`) });
+    if (ocrData.reference) {
+      whereClauses.push({ reference: ILike(`%${ocrData.reference}%`) });
     }
     
     if (ocrData.description) {
       whereClauses.push({ description: ILike(`%${ocrData.description}%`) });
     }
 
-    // Si aucune condition n'est spécifiée, retourner vide
     if (whereClauses.length === 0) {
       return [];
     }
 
-    // Recherche avec OR entre les conditions
     return await this.articleRepository.find({
       where: whereClauses,
-      take: 20, // Limiter les résultats
-      order: { createdAt: 'DESC' } // Trier par date de création
+      take: 20,
+      order: { createdAt: 'DESC' }
     });
-
-  } catch (error) {
-    console.error('Erreur dans searchByOcrData:', error);
-    throw new BadRequestException('Erreur lors de la recherche par OCR');
   }
-}
-///////////////////////////////////////
 
-
-
-
-// Dans article.service.ts
-async compareWithImage(
-  existingArticle: ArticleEntity,
-  imageFile: Express.Multer.File // Recevoir directement le fichier plutôt que le texte
-): Promise<{
-  differences: Record<string, { oldValue: any; newValue: any }>,
-  ocrData: any,
-  hasDifferences: boolean
-}> {
-  let imagePath: string | undefined;
-  
-  try {
-    // 1. Sauvegarder temporairement le fichier
-    imagePath = `./uploads/compare_${Date.now()}_${imageFile.originalname}`;
-    await fs.promises.writeFile(imagePath, imageFile.buffer);
-
-    // 2. Extraire le texte avec gestion robuste des erreurs
-    let imageText: string;
+  async compareWithImage(
+    existingArticle: ArticleEntity,
+    imageFile: Express.Multer.File
+  ): Promise<{
+    differences: Record<string, { oldValue: any; newValue: any }>,
+    ocrData: any,
+    hasDifferences: boolean
+  }> {
+    let imagePath: string | undefined;
+    
     try {
-      imageText = await this.articleOcrService.extractTextFromImage(imagePath);
-    } catch (ocrError) {
-      throw new Error(`Échec OCR: ${ocrError.message}`);
-    }
+      imagePath = `./uploads/compare_${Date.now()}_${imageFile.originalname}`;
+      await fs.promises.writeFile(imagePath, imageFile.buffer);
 
-    // 3. Extraire les données structurées
-    const ocrData = await this.articleOcrService.extractArticleData(imageText);
-    
-    // 4. Comparer les données
-    const differences = this.findDifferences(existingArticle, ocrData);
-    
-    return {
-      differences,
-      ocrData,
-      hasDifferences: Object.keys(differences).length > 0
-    };
-  } catch (error) {
-    throw new Error(`Comparaison impossible: ${error.message}`);
-  } finally {
-    // Nettoyage garantie du fichier temporaire
-    if (imagePath && fs.existsSync(imagePath)) {
-      fs.unlinkSync(imagePath);
+      const imageText = await this.articleOcrService.extractTextFromImage(imagePath);
+      const ocrData = await this.articleOcrService.extractArticleData(imageText);
+      const differences = this.findDifferences(existingArticle, ocrData);
+      
+      return {
+        differences,
+        ocrData,
+        hasDifferences: Object.keys(differences).length > 0
+      };
+    } finally {
+      if (imagePath && fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
+      }
     }
   }
-}
 
-private findDifferences(
-  existingArticle: ArticleEntity, 
-  ocrData: any
-): Record<string, { oldValue: any; newValue: any }> {
-  const differences: Record<string, { oldValue: any; newValue: any }> = {};
-  
-  const fieldsToCompare = [
-    'title', 'description', 'category', 'subCategory',
-    'purchasePrice', 'salePrice', 'quantityInStock', 'status'
-  ];
+  private findDifferences(
+    existingArticle: ArticleEntity, 
+    ocrData: any
+  ): Record<string, { oldValue: any; newValue: any }> {
+    const differences: Record<string, { oldValue: any; newValue: any }> = {};
+    
+    const fieldsToCompare = [
+      'title', 'description', 'reference', 'quantityInStock', 'status'
+    ];
 
-  fieldsToCompare.forEach(field => {
-    const existingValue = existingArticle[field];
-    const newValue = ocrData[field];
+    fieldsToCompare.forEach(field => {
+      const existingValue = existingArticle[field];
+      const newValue = ocrData[field];
 
-    // Skip if both values are null/undefined
-    if (existingValue == null && newValue == null) return;
+      if (existingValue == null && newValue == null) return;
 
-    // Number comparison
-    if (typeof existingValue === 'number') {
-      const numValue = typeof newValue === 'string' ? 
-        parseFloat(newValue.replace(/[^\d.-]/g, '')) : 
-        Number(newValue);
-      
-      if (isNaN(numValue)) {
-        differences[field] = { oldValue: existingValue, newValue };
+      if (typeof existingValue === 'number') {
+        const numValue = typeof newValue === 'string' ? 
+          parseFloat(newValue.replace(/[^\d.-]/g, '')) : 
+          Number(newValue);
+        
+        if (isNaN(numValue)) {
+          differences[field] = { oldValue: existingValue, newValue };
+          return;
+        }
+
+        if (Math.abs(existingValue - numValue) > 0.001) {
+          differences[field] = { 
+            oldValue: existingValue, 
+            newValue: numValue 
+          };
+        }
         return;
       }
 
-      if (Math.abs(existingValue - numValue) > 0.001) {
+      const strExisting = String(existingValue ?? '').trim().toLowerCase();
+      const strNew = String(newValue ?? '').trim().toLowerCase();
+      
+      if (strExisting !== strNew) {
         differences[field] = { 
           oldValue: existingValue, 
-          newValue: numValue 
+          newValue 
         };
       }
-      return;
-    }
+    });
 
-    // String comparison
-    const strExisting = String(existingValue ?? '').trim().toLowerCase();
-    const strNew = String(newValue ?? '').trim().toLowerCase();
-    
-    if (strExisting !== strNew) {
-      differences[field] = { 
-        oldValue: existingValue, 
-        newValue 
-      };
-    }
-  });
+    return differences;
+  }
 
-  return differences;
-}
-// article.service.ts
+  // Text Similarity Methods
+  async findSimilarCategories(input: string): Promise<string[]> {
+    const allCategories = await this.getAllCategories();
+    return allCategories.filter(category => {
+      return this.textSimilarityService.normalizeText(category).includes(
+        this.textSimilarityService.normalizeText(input)) ||
+        this.textSimilarityService.isSimilar(input, category);
+    });
+  }
 
-async findSimilarCategories(input: string): Promise<string[]> {
-  const allCategories = await this.getAllCategories();
-  
-  return allCategories.filter(category => {
-    // Vérifie d'abord l'inclusion simple
-    if (this.textSimilarityService.normalizeText(category).includes(
-       this.textSimilarityService.normalizeText(input))) {
-      return true;
-    }
-    
-    // Puis vérifie la similarité
-    return this.textSimilarityService.isSimilar(input, category);
-  });
-}
+  async findSimilarSubCategories(input: string): Promise<string[]> {
+    const allSubCategories = await this.getAllSubCategories();
+    return allSubCategories.filter(subCategory => {
+      const normalizedInput = this.textSimilarityService.normalizeText(input);
+      const normalizedSubCat = this.textSimilarityService.normalizeText(subCategory);
+      return normalizedSubCat.includes(normalizedInput) || 
+             this.textSimilarityService.isSimilar(input, subCategory);
+    });
+  }
 
-async findSimilarSubCategories(input: string): Promise<string[]> {
-  const allSubCategories = await this.getAllSubCategories();
-  
-  return allSubCategories.filter(subCategory => {
-    const normalizedInput = this.textSimilarityService.normalizeText(input);
-    const normalizedSubCat = this.textSimilarityService.normalizeText(subCategory);
-    
-    // Match partiel ou similaire
-    return normalizedSubCat.includes(normalizedInput) || 
-           this.textSimilarityService.isSimilar(input, subCategory);
-  });
-}
   async validateCategoryUniqueness(category: string): Promise<{valid: boolean; matches?: string[]}> {
     const similarCategories = await this.findSimilarCategories(category);
     return {
@@ -361,24 +1015,12 @@ async findSimilarSubCategories(input: string): Promise<string[]> {
       valid: similarSubCategories.length === 0,
       matches: similarSubCategories
     };
-  }
+  }*/
 
-
-  /**
-   * Récupère un article par son ID.
-   */
-  async findOneById(id: number): Promise<ArticleEntity> {
-    const article = await this.articleRepository.findOneById(id);
-    if (!article) {
-      throw new NotFoundException('Article non trouvé');
-    }
-    return article;
-  }
-
-  /**
-   * Récupère un article en fonction des conditions spécifiées.
-   */
-  async findOneByCondition(
+  // Basic CRUD Methods
+  /*
+*/
+ /* async findOneByCondition(
     query: IQueryObject,
   ): Promise<ResponseArticleDto | null> {
     const queryBuilder = new QueryBuilder();
@@ -390,169 +1032,37 @@ async findSimilarSubCategories(input: string): Promise<string[]> {
     return article;
   }
 
-  /**
-   * Récupère le nombre total d'articles.
-   */
-  async findAll(
-    query: IQueryObject,
-  ): Promise<{ total: number }> {
-    const queryBuilder = new QueryBuilder();
-    const queryOptions = queryBuilder.build(query);
+ */
 
-    // Compter le nombre total d'articles
-    const total = await this.articleRepository.getTotalCount({
-      where: queryOptions.where,
-    });
+  
 
-    return { total };
-  }
 
-  /**
-   * Récupère tous les articles paginés.
-   */
-  async findAllPaginated(
-    query: IQueryObject,
-  ): Promise<PageDto<ResponseArticleDto>> {
-    const queryBuilder = new QueryBuilder();
-    const queryOptions = queryBuilder.build(query);
-    const count = await this.articleRepository.getTotalCount({
-      where: queryOptions.where,
-    });
-
-    const entities = await this.articleRepository.findAll(
-      queryOptions as FindManyOptions<ArticleEntity>,
-    );
-
-    const pageMetaDto = new PageMetaDto({
-      pageOptionsDto: {
-        page: parseInt(query.page),
-        take: parseInt(query.limit),
-      },
-      itemCount: count,
-    });
-
-    return new PageDto(entities, pageMetaDto);
-  }
-
-  /**
-   * Enregistre plusieurs articles.
-   */
-  async saveMany(createArticleDtos: CreateArticleDto[]): Promise<ArticleEntity[]> {
-    const articles = await Promise.all(
-      createArticleDtos.map(async (dto) => {
-        const article = this.articleRepository.create({
-          ...dto,
-          status: dto.status || 'draft', // Statut par défaut
-        });
-
-        const savedArticle = await this.articleRepository.save(article);
-        return savedArticle;
-      }),
-    );
-
-    return articles;
-  }
-
-  /**
-   * Supprime tous les articles.
-   */
-  async deleteAll() {
-    return this.articleRepository.deleteAll();
-  }
-
-  /**
-   * Récupère le nombre total d'articles.
-   */
   async getTotal(): Promise<number> {
     return this.articleRepository.getTotalCount();
   }
-
-  /**
-   * Enregistre un article en vérifiant si le titre existe déjà.
-   */
+/*
   async saveWithFilterTitle(
     createArticleDto: CreateArticleDto,
   ): Promise<ArticleEntity | null> {
-    try {
-      const existingArticle = await this.articleRepository.findOne({
-        where: { title: createArticleDto.title },
-      });
+    const existingArticle = await this.articleRepository.findOne({
+      where: { title: createArticleDto.title },
+    });
 
-      if (existingArticle) {
-        console.log(`Article avec le titre "${createArticleDto.title}" existe déjà.`);
-        return null;
-      }
-
-      const newArticle = this.articleRepository.create({
-        ...createArticleDto,
-        status: createArticleDto.status || 'draft', // Statut par défaut
-      });
-
-      return await this.articleRepository.save(newArticle);
-    } catch (error) {
-      console.error('Erreur lors de l\'enregistrement de l\'article', error);
-      throw error;
+    if (existingArticle) {
+      return null;
     }
-  }
 
-  /**
-   * Enregistre un article.
-   */
-  async save(createArticleDto: CreateArticleDto): Promise<ArticleEntity> {
-    const article = this.articleRepository.create({
+    const newArticle = this.articleRepository.create({
       ...createArticleDto,
-      status: createArticleDto.status || 'draft', // Statut par défaut
+      status: createArticleDto.status || 'draft',
     });
 
-    return this.articleRepository.save(article);
+    return await this.articleRepository.save(newArticle);
   }
-
-  /**
-   * Supprime un article de manière logicielle.
-   */
-  async softDelete(id: number): Promise<ArticleEntity> {
-    await this.findOneById(id); // Vérifie que l'article existe
-    return this.articleRepository.softDelete(id); // Effectue la suppression douce
-  }
-
-  /**
-
-  async importCSV(file: Express.Multer.File): Promise<ArticleEntity[]> {
-    const results: CreateArticleDto[] = [];
-
-    return new Promise((resolve, reject) => {
-      const stream = Readable.from(file.buffer);
-      stream
-        .pipe(csv())
-        .on('data', (data) => {
-          results.push({
-            title: data.title,
-            description: data.description,
-            category: data.category,
-            subCategory: data.subCategory,
-            purchasePrice: parseFloat(data.purchasePrice),
-            salePrice: parseFloat(data.salePrice),
-            quantityInStock: parseInt(data.quantityInStock, 10),
-            status: data.status || 'draft', // Statut par défaut
-          });
-        })
-        .on('end', async () => {
-          try {
-            const importedArticles = await this.saveMany(results);
-            resolve(importedArticles);
-          } catch (error) {
-            reject(new BadRequestException('Erreur lors de l\'enregistrement des articles.'));
-          }
-        })
-        .on('error', (error) => {
-          reject(new BadRequestException('Erreur lors de la lecture du fichier CSV.'));
-        });
-    });
-  }
-
-  /**
-   * Importe des articles depuis un fichier Excel.
-   */
+*/
+  
+ /* */
+/*
   async importExcel(file: Express.Multer.File): Promise<ArticleEntity[]> {
     const workbook = xlsx.read(file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
@@ -562,78 +1072,21 @@ async findSimilarSubCategories(input: string): Promise<string[]> {
     const articles: CreateArticleDto[] = data.map((row: any) => ({
       title: row.title,
       description: row.description,
-      category: row.category,
-      subCategory: row.subCategory,
-      purchasePrice: parseFloat(row.purchasePrice),
-      salePrice: parseFloat(row.salePrice),
+      reference: row.reference,
       quantityInStock: parseInt(row.quantityInStock, 10),
-      status: row.status || 'draft', // Statut par défaut
+      status: row.status || 'draft',
     }));
 
     return this.saveMany(articles);
   }
 
-  /**
-   * Récupère l'historique des modifications d'un article.
-   */
   async getArticleHistory(articleId: number) {
     return this.articleHistoryService.getArticleHistory(articleId);
   }
 
-  /**
-   * Met à jour un article.
-   
-  async update(
-    id: number,
-    updateArticleDto: UpdateArticleDto,
-  ): Promise<ArticleEntity> {
-    // Récupérer l'article existant
-    const article = await this.articleRepository.findOneById(id);
-  
-    if (!article) {
-      throw new NotFoundException('Article non trouvé');
-    }
-  
-    // Incrémenter la version
-    article.version += 1;
-  
-    // Enregistrer les modifications dans l'historique
-    const changes = this.getChanges(article, updateArticleDto);
-    await this.articleHistoryService.createHistoryEntry({
-      version: article.version,
-      changes,
-      articleId: article.id,
-    });
-  
-    // Mettre à jour les champs de l'article
-    Object.assign(article, updateArticleDto);
-  
-    // Sauvegarder les modifications
-    return await this.articleRepository.save(article);
-  }*/
+ 
+ 
 
-  private getChanges(
-    existingArticle: ArticleEntity,
-    newData: UpdateArticleDto,
-  ): Record<string, { oldValue: any; newValue: any }> {
-    const changes: Record<string, { oldValue: any; newValue: any }> = {};
-  
-    // Comparer chaque champ
-    Object.keys(newData).forEach((key) => {
-      if (existingArticle[key] !== newData[key]) {
-        changes[key] = {
-          oldValue: existingArticle[key],
-          newValue: newData[key],
-        };
-      }
-    });
-  
-    return changes;
-  }
-
-  /**
-   * Récupère les performances des ventes d'un article.
-   */
   async getSalesPerformance(articleId: number): Promise<{ totalSales: number, totalRevenue: number }> {
     const article = await this.articleRepository.findOneById(articleId);
     if (!article) {
@@ -641,43 +1094,11 @@ async findSimilarSubCategories(input: string): Promise<string[]> {
     }
 
     const totalSales = article.quantityInStock || 0;
-    const totalRevenue = totalSales * article.salePrice;
+    const totalRevenue = totalSales * (article.salePrice || 0);
 
     return { totalSales, totalRevenue };
   }
 
-  /**
-
-  async getPopularArticles(limit: number = 10): Promise<ArticleEntity[]> {
-    return this.articleRepository.find({
-      order: { quantityInStock: 'DESC' },
-      take: limit,
-    });
-  }
-
-
-  async getStagnantArticles(limit: number = 10): Promise<ArticleEntity[]> {
-    return this.articleRepository.find({
-      where: { quantityInStock: 0 },
-      take: limit,
-    });
-  }
-
-  /**
-
-  async optimizeStock(articleId: number, newStockLevel: number): Promise<ArticleEntity> {
-    const article = await this.articleRepository.findOneById(articleId);
-    if (!article) {
-      throw new NotFoundException('Article non trouvé');
-    }
-
-    article.quantityInStock = newStockLevel;
-    return this.articleRepository.save(article);
-  }
-
-  /**
-   * Ajuste le prix d'un article.
-   */
   async adjustPrice(articleId: number, newPrice: number): Promise<ArticleEntity> {
     const article = await this.articleRepository.findOneById(articleId);
     if (!article) {
@@ -688,326 +1109,46 @@ async findSimilarSubCategories(input: string): Promise<string[]> {
     return this.articleRepository.save(article);
   }
 
-  /**
-  
-  async getStockAlerts(threshold: number = 10): Promise<ArticleEntity[]> {
-    return this.articleRepository.find({
-      where: { quantityInStock: LessThanOrEqual(threshold) },
-    });
-  }
+ */
+   /*
 
-  /**
-
-  async getPromotionRecommendations(): Promise<ArticleEntity[]> {
-    return this.articleRepository.find({
-      where: { quantityInStock: MoreThanOrEqual(50) }, // Exemple de seuil pour les recommandations
-    });
-  }
-
-  /**
-   * Analyse les articles par niveaux.
-   */
-  async analyzeArticlesByLevels(articleId: number): Promise<{ message: string; data: any }> {
-    try {
-      const article = await this.articleRepository.findOneById(articleId);
-      if (!article) {
-        throw new NotFoundException('Article non trouvé.');
-      }
-
-      const stockAnalysis = this.analyzeStock([article]); // Analyse du stock
-      const salesAnalysis = this.analyzeSales([article]); // Analyse des ventes
-      const priceAnalysis = this.analyzePrices([article]); // Analyse des prix
-      const categoryAnalysis = this.analyzeByCategory([article]); // Analyse par catégorie
-      const trendAnalysis = this.analyzeTrends([article]); // Analyse des tendances
-
-      return {
-        message: 'Analyse de l\'article terminée.',
-        data: {
-          stockAnalysis,
-          salesAnalysis,
-          priceAnalysis,
-          categoryAnalysis,
-          trendAnalysis,
-        },
-      };
-    } catch (error) {
-      console.error('Erreur lors de l\'analyse de l\'article:', error);
-      throw new BadRequestException('Erreur lors de l\'analyse de l\'article.');
-    }
-  }
-
-  /**
-   * Analyse le stock des articles.
-   */
-  private analyzeStock(articles: ArticleEntity[]): any {
-    const lowStock = articles.filter((article) => article.quantityInStock <= 10).length;
-    const sufficientStock = articles.filter((article) => article.quantityInStock > 10).length;
-
+    const historyEntries = await this.articleHistoryService.getArticleHistory(id);
     return {
-      lowStock,
-      sufficientStock,
-      totalArticles: articles.length,
-    };
-  }
-
-  /**
-   * Analyse les ventes des articles.
-   */
-  private analyzeSales(articles: ArticleEntity[]): any {
-    const totalSales = articles.reduce((sum, article) => sum + article.quantityInStock, 0);
-    const averageSales = totalSales / articles.length || 0;
-
-    const highSales = articles.filter((article) => article.quantityInStock > 50).length;
-    const normalSales = articles.filter((article) => article.quantityInStock <= 50).length;
-
-    return {
-      totalSales,
-      averageSales,
-      highSales,
-      normalSales,
-    };
-  }
-
-  /**
-   * Analyse les prix des articles.
-   */
-  private analyzePrices(articles: ArticleEntity[]): any {
-    const totalRevenue = articles.reduce((sum, article) => sum + (article.salePrice * article.quantityInStock), 0);
-    const averagePrice = totalRevenue / articles.reduce((sum, article) => sum + article.quantityInStock, 0) || 0;
-
-    const premiumArticles = articles.filter((article) => article.salePrice > 100).length;
-    const standardArticles = articles.filter((article) => article.salePrice <= 100).length;
-
-    return {
-      totalRevenue,
-      averagePrice,
-      premiumArticles,
-      standardArticles,
-    };
-  }
-
-  /**
-   * Analyse les articles par catégorie.
-   */
-  private analyzeByCategory(articles: ArticleEntity[]): any {
-    const categories = {};
-
-    articles.forEach((article) => {
-      if (!categories[article.category]) {
-        categories[article.category] = {
-          count: 0,
-          totalSales: 0,
-          totalRevenue: 0,
-        };
-      }
-
-      categories[article.category].count += 1;
-      categories[article.category].totalSales += article.quantityInStock;
-      categories[article.category].totalRevenue += article.salePrice * article.quantityInStock;
-    });
-
-    return categories;
-  }
-
-  /**
-   * Analyse les tendances des articles.
-   */
-  private analyzeTrends(articles: ArticleEntity[]): any {
-    const trendingArticles = articles
-      .filter((article) => article.quantityInStock > 50) // Exemple de critère pour les tendances
-      .map((article) => ({
-        id: article.id,
-        title: article.title,
-        sales: article.quantityInStock,
-      }));
-
-    return {
-      trendingArticles,
-      totalTrending: trendingArticles.length,
-    };
-  }
-
-  async getArticleDetails(id: number): Promise<ResponseArticleDto> {
-    try {
-      // Récupérer l'article par son ID
-      const article = await this.articleRepository.findOneById(id);
-  
-      if (!article) {
-        throw new NotFoundException(`Aucun article trouvé avec l'ID ${id}.`);
-      }
-  
-      // Récupérer l'historique de l'article
-      const historyEntries = await this.articleHistoryService.getArticleHistory(id);
-  
-      // Convertir l'entité en DTO de réponse
-      const responseArticleDto: ResponseArticleDto = {
-        id: article.id,
-        title: article.title,
-        description: article.description,
-        quantityInStock: article.quantityInStock,
-        subCategory: article.subCategory,
-        purchasePrice: article.purchasePrice,
-        salePrice: article.salePrice,
-        category: article.category,
-        status: article.status,
-        version: article.version,
-        createdAt: article.createdAt,
-        updatedAt: article.updatedAt,
-        deletedAt: article.deletedAt,
-        isDeletionRestricted: article.isDeletionRestricted,
-        history: historyEntries.map((entry) => ({
-          version: entry.version,
-          changes: entry.changes,
-          date: entry.date,
-        })),
-      };
-  
-      return responseArticleDto;
-    } catch (error) {
-      console.error('Erreur dans getArticleDetails:', error);
-      throw new BadRequestException('Erreur lors de la récupération des détails de l\'article.');
-    }
-  }
-
-
-  // article.service.ts
-
-async getAllCategories(): Promise<string[]> {
-  const articles = await this.articleRepository.findAll({
-    select: ['category'],
-    where: { deletedAt: null } // Exclure les articles supprimés
-  });
-  
-  // Extraire les catégories uniques
-  const categories = [...new Set(articles.map(article => article.category))];
-  return categories.filter(category => category); // Filtrer les valeurs null/undefined
-}
-
-async getAllSubCategories(): Promise<string[]> {
-  const articles = await this.articleRepository.findAll({
-    select: ['subCategory'],
-    where: { deletedAt: null } // Exclure les articles supprimés
-  });
-  
-  // Extraire les sous-catégories uniques
-  const subCategories = [...new Set(articles.map(article => article.subCategory))];
-  return subCategories.filter(subCat => subCat); // Filtrer les valeurs null/undefined
-}
-
-
-// Modifier la méthode update existante
-async update(
-  id: number,
-  updateArticleDto: UpdateArticleDto,
-): Promise<ArticleEntity> {
-  // Récupérer l'article existant
-  const article = await this.articleRepository.findOneById(id);
-  
-  if (!article) {
-    throw new NotFoundException('Article non trouvé');
-  }
-
-  // Incrémenter la version
-  const newVersion = article.version + 1;
-
-  // Enregistrer les modifications dans l'historique
-  const changes = this.getChanges(article, updateArticleDto);
-  await this.articleHistoryService.createHistoryEntry({
-    version: newVersion,
-    changes,
-    articleId: article.id,
-  });
-
-  // Mettre à jour les champs de l'article
-  await this.articleRepository.update(id, {
-    ...updateArticleDto,
-    version: newVersion
-  });
-
-  // Retourner l'article mis à jour
-  return this.articleRepository.findOneById(id);
-}
-
-//////////////////////////////////////////////////////////
-async restoreArticleVersion(articleId: number, targetVersion: number): Promise<ArticleEntity> {
-  // 1. Récupérer l'article actuel
-  const currentArticle = await this.articleRepository.findOneById(articleId);
-  if (!currentArticle) {
-    throw new NotFoundException('Article non trouvé');
-  }
-
-  // 2. Récupérer l'historique complet
-  const history = await this.articleHistoryService.getArticleHistory(articleId);
-  
-  // 3. Trouver la version cible exacte
-  const targetVersionEntry = history.find(entry => entry.version === targetVersion);
-  if (!targetVersionEntry) {
-    throw new NotFoundException(`Version ${targetVersion} non trouvée pour cet article`);
-  }
-
-  // 4. Créer un nouvel objet article avec les données de base
-  const restoredArticle = this.articleRepository.create({
-    ...currentArticle,
-    version: currentArticle.version + 1 // On incrémente directement la version
-  });
-
-  // 5. Restaurer chaque champ modifié dans la version cible
-  Object.entries(targetVersionEntry.changes).forEach(([field, change]) => {
-    if (field in restoredArticle) {
-      // Conversion des types pour les champs numériques
-      switch(field) {
-        case 'salePrice':
-        case 'purchasePrice':
-          restoredArticle[field] = parseFloat(change.oldValue);
-          break;
-        case 'quantityInStock':
-          restoredArticle[field] = parseInt(change.oldValue, 10);
-          break;
-        default:
-          restoredArticle[field] = change.oldValue;
-      }
-    }
-  });
-
-  // 6. Enregistrer les changements dans l'historique
-  const changes = this.getChanges(currentArticle, restoredArticle);
-  await this.articleHistoryService.createHistoryEntry({
-    version: restoredArticle.version,
-    changes,
-    articleId,
-  });
-
-  // 7. Sauvegarder l'article restauré
-  await this.articleRepository.save(restoredArticle);
-
-  // 8. Retourner l'article complet
-  return this.articleRepository.findOne({
-    where: { id: articleId },
-    relations: ['history']
-  });
-}
-
-async getAvailableVersions(articleId: number): Promise<{version: number, date?: Date}[]> {
-  const article = await this.articleRepository.findOneById(articleId);
-  if (!article) {
-    throw new NotFoundException('Article non trouvé');
-  }
-
-  const history = await this.articleHistoryService.getArticleHistory(articleId);
-  
-  const versions = history.map(entry => ({
-    version: entry.version,
-    date: entry.date
-  }));
-
-  // Ajouter la version actuelle si elle n'existe pas déjà
-  if (!versions.some(v => v.version === article.version)) {
-    versions.push({
+      id: article.id,
+      title: article.title,
+      description: article.description,
+      reference: article.reference,
+      quantityInStock: article.quantityInStock,
+      status: article.status,
       version: article.version,
-      date: article.updatedAt || article.createdAt
-    });
+      createdAt: article.createdAt,
+      updatedAt: article.updatedAt,
+      deletedAt: article.deletedAt,
+      history: historyEntries.map((entry) => ({
+        version: entry.version,
+        changes: entry.changes,
+        date: entry.date,
+      })),
+    };
   }
 
-  return versions.sort((a, b) => b.version - a.version);
-}
+  async getAllCategories(): Promise<string[]> {
+    const articles = await this.articleRepository.findAll({
+      select: ['category'],
+      where: { deletedAt: null }
+    });
+    const categories = [...new Set(articles.map(article => article.category))];
+    return categories.filter(category => category);
+  }
+
+  async getAllSubCategories(): Promise<string[]> {
+    const articles = await this.articleRepository.findAll({
+      select: ['subCategory'],
+      where: { deletedAt: null }
+    });
+    const subCategories = [...new Set(articles.map(article => article.subCategory))];
+    return subCategories.filter(subCat => subCat);
+  }
+
+*/
 }

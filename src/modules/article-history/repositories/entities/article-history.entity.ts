@@ -1,24 +1,26 @@
 import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
 import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn } from 'typeorm';
 
-@Entity('article_history') // Nom de la table dans la base de données
+@Entity('article_history')
 export class ArticleHistoryEntity {
-  @PrimaryGeneratedColumn() // Colonne ID auto-générée
+  @PrimaryGeneratedColumn()
   id: number;
 
-  @Column() // Version de l'article lors de la modification
+  @Column()
   version: number;
 
-  @Column('json') // Stocke les modifications sous forme de JSON
+  @Column('json')
   changes: Record<string, { oldValue: any; newValue: any }>;
 
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' }) // Date de la modification
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   date: Date;
-
-  @ManyToOne(() => ArticleEntity, (article) => article.history) // Relation Many-to-One avec ArticleEntity
-  @JoinColumn({ name: 'articleId' }) // Nom de la colonne de la clé étrangère
+  
+  @ManyToOne(() => ArticleEntity, article => article.history, { 
+    onDelete: 'CASCADE',
+    nullable: false
+  })
   article: ArticleEntity;
 
-  @Column() // Clé étrangère vers l'article
+  @Column()
   articleId: number;
 }

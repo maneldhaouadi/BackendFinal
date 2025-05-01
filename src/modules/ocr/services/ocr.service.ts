@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ArticleStatus } from 'src/modules/article/interfaces/article-data.interface';
 import { createWorker, PSM, OEM } from 'tesseract.js';
 //import * as nlp from 'compromise';
 
@@ -329,16 +330,14 @@ export interface TaxDetail {
   amount: number;
 }
 
-export interface ArticleData {
-  title: string | null;
-  description: string | null;
-  category: string | null;
-  subCategory: string | null;
-  purchasePrice: number | null;
-  salePrice: number | null;
-  quantityInStock: number | null;
-  barcode: string | null;
-  status: string | null;
-  version: string | null;
-  date: Date | null;
+interface ArticleData {
+  title?: string;
+  description?: string;
+  reference: string;
+  quantityInStock: number;
+  unitPrice: number;
+  status?: ArticleStatus;
+  version?: number;
+  notes?: string;
+  rawText: string;
 }

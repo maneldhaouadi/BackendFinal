@@ -36,7 +36,7 @@ import { Request as ExpressRequest } from 'express';
 @UseInterceptors(LogInterceptor)
 export class InvoiceController {
   constructor(private readonly invoiceService: InvoiceService) {}
-
+/*
   @Get('/all')
   async findAll(@Query() options: IQueryObject): Promise<ResponseInvoiceDto[]> {
     return this.invoiceService.findAll(options);
@@ -149,5 +149,5 @@ export class InvoiceController {
   ): Promise<ResponseInvoiceDto> {
     req.logInfo = { id };
     return this.invoiceService.softDelete(id);
-  }
+  }*/
 }

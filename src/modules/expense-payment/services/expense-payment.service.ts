@@ -33,7 +33,7 @@ export class ExpensePaymentService {
     private readonly storageService: StorageService,
     
   ) {}
-
+/*
   async findOneById(id: number): Promise<ExpensePaymentEntity> {
     const expensePayment = await this.expenesePaymentRepository.findOneById(id);
     if (!expensePayment) {
@@ -656,5 +656,5 @@ async softDeleteMany(ids: number[]): Promise<void> {
 
   async getTotal(): Promise<number> {
     return this.expenesePaymentRepository.getTotalCount();
-  }
+  }*/
 }

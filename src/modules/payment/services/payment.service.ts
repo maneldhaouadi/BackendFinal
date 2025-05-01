@@ -26,7 +26,7 @@ export class PaymentService {
     private readonly invoiceService: InvoiceService,
     private readonly currencyService: CurrencyService,
   ) {}
-
+/*
   async findOneById(id: number): Promise<PaymentEntity> {
     const payment = await this.paymentRepository.findOneById(id);
     if (!payment) {
@@ -183,5 +183,5 @@ export class PaymentService {
 
   async getTotal(): Promise<number> {
     return this.paymentRepository.getTotalCount();
-  }
+  }*/
 }

@@ -6,14 +6,14 @@ import {
   Body,
   NotFoundException,
   Res,
-  BadRequestException,
+  Delete,
+  ParseIntPipe,
 } from '@nestjs/common';
-import { Response } from 'express'; // Importez Response pour gérer la réponse HTTP
+import { Response } from 'express';
 import { ArticleHistoryService } from '../services/article-history.service';
-import { ApiTags, ApiParam, ApiBody, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiParam, ApiBody, ApiResponse, ApiOperation } from '@nestjs/swagger';
 import { CreateArticleHistoryDto } from '../dtos/createArticleHistoryDto';
 import { ResponseArticleHistoryDto } from '../dtos/responseArticleHistoryDto';
-import * as fs from 'fs'; // Importation du module fs pour gérer les fichiers
 import { ArticleService } from 'src/modules/article/services/article.service';
 
 @ApiTags('Article History')
@@ -32,7 +32,7 @@ export class ArticleHistoryController {
   ): Promise<ResponseArticleHistoryDto> {
     return this.articleHistoryService.createHistoryEntry(createArticleHistoryDto);
   }
-
+//fonctionne
   @Get(':articleId/history')
   @ApiParam({ name: 'articleId', type: 'number' })
   @ApiResponse({ status: 200, type: [ResponseArticleHistoryDto] })
@@ -48,75 +48,41 @@ export class ArticleHistoryController {
     return history;
   }
 
-  @Get(':articleId/generate-files')
-  @ApiParam({ name: 'articleId', type: 'number' })
-  @ApiResponse({ status: 200, description: 'Fichiers PDF générés avec succès.', type: [String] })
-  async generateVersionFiles(@Param('articleId') articleId: number): Promise<string[]> {
-    try {
-      // Récupérer l'article actuel
-      const article = await this.articleService.findOneById(articleId);
-      if (!article) {
-        throw new NotFoundException('Article non trouvé.');
-      }
-  
-      // Générer les fichiers pour cet article
-      const pdfFilePaths = await this.articleHistoryService.generateVersionFile(article);
-  
-      // Retourner les chemins des fichiers PDF générés
-      return pdfFilePaths;
-    } catch (error) {
-      throw new NotFoundException(error.message);
-    }
-  }
 
   @Get(':articleId/version/:version/download-pdf')
-@ApiParam({ name: 'articleId', type: 'number' })
-@ApiParam({ name: 'version', type: 'number' })
-async downloadVersionPdf(
-  @Param('articleId') articleId: number,
-  @Param('version') version: number,
-  @Res() res: Response, // Utilisez Response pour envoyer le fichier
-) {
-  try {
-    // Récupérer l'article
-    const article = await this.articleService.findOneById(articleId);
-    if (!article) {
-      throw new NotFoundException('Article non trouvé.');
+  @ApiParam({ name: 'articleId', type: 'number' })
+  @ApiParam({ name: 'version', type: 'number' })
+  async downloadVersionPdf(
+    @Param('articleId') articleId: number,
+    @Param('version') version: number,
+    @Res() res: Response,
+  ) {
+    try {
+      const pdfBuffer = await this.articleHistoryService.generateSingleVersionPdf(articleId, version);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename=article_${articleId}_version_${version}.pdf`,
+      );
+
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error('Erreur lors de la génération du PDF :', error);
+      res.status(500).send(error.message || 'Erreur lors de la génération du PDF.');
     }
-
-    // Récupérer le chemin du fichier PDF pour la version spécifiée
-    const pdfFilePath = await this.articleHistoryService.getVersionFilePath(articleId, version);
-
-    // Vérifier si le fichier existe
-    if (!pdfFilePath || !fs.existsSync(pdfFilePath)) {
-      throw new NotFoundException(`Fichier PDF pour la version ${version} non trouvé.`);
-    }
-
-    // Envoyer le fichier en réponse
-    res.download(pdfFilePath, `article_${articleId}_version_${version}.pdf`, (err) => {
-      if (err) {
-        console.error('Erreur lors du téléchargement du fichier :', err);
-        res.status(500).send('Erreur lors du téléchargement du fichier.');
-      }
-    });
-  } catch (error) {
-    console.error('Erreur lors de la récupération ou du téléchargement du PDF :', error);
-    res.status(500).send(error.message || 'Erreur lors du téléchargement du PDF.');
   }
+
+  // article-history.controller.ts
+
+@Delete(':articleId/version/:version')
+@ApiOperation({ summary: 'Supprimer une version spécifique et ajuster les versions suivantes' })
+@ApiParam({ name: 'articleId', description: 'ID de l\'article', type: Number })
+@ApiParam({ name: 'version', description: 'Numéro de version à supprimer', type: Number })
+async deleteVersion(
+    @Param('articleId', ParseIntPipe) articleId: number,
+    @Param('version', ParseIntPipe) version: number
+): Promise<void> {
+    return this.articleHistoryService.deleteVersion(articleId, version);
 }
-
-} 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+}

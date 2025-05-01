@@ -21,7 +21,7 @@ export class PaymentInvoiceEntryService {
     private readonly invoiceService: InvoiceService,
   ) {}
 
-  async findOneByCondition(
+  /*async findOneByCondition(
     query: IQueryObject,
   ): Promise<PaymentInvoiceEntryEntity | null> {
     const queryBuilder = new QueryBuilder();
@@ -274,5 +274,5 @@ export class PaymentInvoiceEntryService {
     for (const id of ids) {
       await this.softDelete(id);
     }
-  }
+  }*/
 }

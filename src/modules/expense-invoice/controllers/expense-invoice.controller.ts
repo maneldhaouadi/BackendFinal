@@ -33,7 +33,7 @@ import { ExpenseInvoiceService } from '../services/expense-invoice.service';
   @UseInterceptors(LogInterceptor)
   export class ExpenseInvoiceController {
     constructor(private readonly invoiceService: ExpenseInvoiceService) {}
-  
+/*  
     @Get('/all')
     async findAll(@Query() options: IQueryObject): Promise<ExpenseResponseInvoiceDto[]> {
       return this.invoiceService.findAll(options);
@@ -152,7 +152,7 @@ async delete(
     ): Promise<ExpenseResponseInvoiceDto> {
       req.logInfo = { id };
       return this.invoiceService.updateInvoiceStatusIfExpired(id);
-    }
+    }*/
 
   }
 

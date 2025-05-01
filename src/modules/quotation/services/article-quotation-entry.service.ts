@@ -24,7 +24,7 @@ export class ArticleQuotationEntryService {
     private readonly taxService: TaxService,
     private readonly calculationsService: InvoicingCalculationsService,
   ) {}
-
+/*
   async findOneByCondition(
     query: IQueryObject,
   ): Promise<ResponseArticleQuotationEntryDto | null> {
@@ -264,5 +264,5 @@ export class ArticleQuotationEntryService {
       ids.map(async (id) => this.softDelete(id)),
     );
     return entries;
-  }
+  }*/
 }

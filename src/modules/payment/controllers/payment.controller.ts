@@ -31,7 +31,7 @@ import { Request as ExpressRequest } from 'express';
 @UseInterceptors(LogInterceptor)
 export class PaymentController {
   constructor(private readonly paymentService: PaymentService) {}
-
+/*
   @Get('/all')
   async findAll(@Query() options: IQueryObject): Promise<ResponsePaymentDto[]> {
     return this.paymentService.findAll(options);
@@ -101,5 +101,5 @@ export class PaymentController {
   ): Promise<ResponsePaymentDto> {
     req.logInfo = { id };
     return this.paymentService.softDelete(id);
-  }
+  }*/
 }

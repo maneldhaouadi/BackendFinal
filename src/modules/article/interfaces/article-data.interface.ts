@@ -1,15 +1,30 @@
-// src/shared/interfaces/article-data.interface.ts
+import { ArticleHistoryEntity } from "src/modules/article-history/repositories/entities/article-history.entity";
+
 export interface ArticleData {
-    title: string;
-    description: string;
-    category: string;
-    subCategory: string; // Rendue obligatoire
-    purchasePrice: number;
-    salePrice: number;
+    id?: number;
+    title?: string | null;
+    description?: string | null;
+    reference: string;
     quantityInStock: number;
-    barcode?: string;
-    status?: string;
+    unitPrice: number; // Ajouté pour correspondre à l'entité
+    status: ArticleStatus;
     version?: number;
-    date?: Date;
-    rawText?: string;
+    notes?: string | null;
+    justificatifFile?: Buffer | null; // Changé pour correspondre au type de l'entité
+    justificatifFileName?: string | null; // Ajouté
+    justificatifMimeType?: string | null; // Ajouté
+    justificatifFileSize?: number | null; // Ajouté
+    createdAt?: Date;
+    updatedAt?: Date;
+    deletedAt?: Date | null;
+    history?: ArticleHistoryEntity[];
 }
+
+export type ArticleStatus = 
+  | 'draft'
+  | 'active'
+  | 'inactive'
+  | 'archived'
+  | 'out_of_stock'
+  | 'pending_review'
+  | 'deleted';

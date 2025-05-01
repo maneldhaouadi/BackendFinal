@@ -53,7 +53,7 @@ export class ExpenseInvoiceService {
     private readonly pdfService: PdfService,
     private readonly expenseQuotationService:ExpensQuotationService
   ) {}
- 
+ /*
   async findOneById(id: number): Promise<ExpenseInvoiceEntity> {
     const invoice = await this.invoiceRepository.findOneById(id);
     if (!invoice) {
@@ -233,9 +233,6 @@ async save(createInvoiceDto: ExpenseCreateInvoiceDto): Promise<ExpenseInvoiceEnt
   return invoice;
 }
 
-/**
- * ✅ Fonction pour générer un numéro séquentiel au format INV-XXXX
- */
 private async generateSequentialNumber(): Promise<string> {
   const lastInvoice = await this.invoiceRepository.findOne({
     order: { id: 'DESC' },
@@ -634,7 +631,7 @@ if (updateInvoiceDto.uploads) {
     }
   
     return invoice;
-  }
+  }*/
 }
 
 

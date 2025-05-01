@@ -24,7 +24,7 @@ export class ExpenseArticleInvoiceEntryService {
     private readonly taxService: TaxService,
     private readonly calculationsService: InvoicingCalculationsService,
   ) {}
-
+/*
   async findOneByCondition(
     query: IQueryObject,
   ): Promise<ExpenseResponseArticleInvoiceEntryDto | null> {
@@ -279,5 +279,5 @@ export class ExpenseArticleInvoiceEntryService {
       ids.map(async (id) => this.softDelete(id)),
     );
     return entries;
-  }
+  }*/
 }

@@ -58,7 +58,7 @@ export class InvoiceService {
     private readonly pdfService: PdfService,
   ) {}
 
-  async downloadPdf(id: number, template: string): Promise<StreamableFile> {
+ /* async downloadPdf(id: number, template: string): Promise<StreamableFile> {
     const invoice = await this.findOneByCondition({
       filter: `id||$eq||${id}`,
       join: new String().concat(
@@ -565,5 +565,5 @@ export class InvoiceService {
 
   async getTotal(): Promise<number> {
     return this.invoiceRepository.getTotalCount();
-  }
+  }*/
 }

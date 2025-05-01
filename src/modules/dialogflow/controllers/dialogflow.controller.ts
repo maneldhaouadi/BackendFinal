@@ -8,7 +8,7 @@ export class DialogflowController {
   private readonly logger = new Logger(DialogflowController.name);
   private readonly PROJECT_ID = 'votre-project-id-dialogflow'; 
   constructor(private readonly dialogflowService: DialogflowService) {}
-
+/*
   @Post()
   public async handleDialogflowRequest(
     @Body() fullRequest: {
@@ -864,5 +864,5 @@ private extractValidQuantity(request: any): number | null {
   }
 
   return null;
-}
+}*/
 }

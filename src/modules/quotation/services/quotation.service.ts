@@ -52,7 +52,7 @@ export class QuotationService {
     private readonly pdfService: PdfService,
   ) {}
 
-  async downloadPdf(id: number, template: string): Promise<StreamableFile> {
+  /*async downloadPdf(id: number, template: string): Promise<StreamableFile> {
     const quotation = await this.findOneByCondition({
       filter: `id||$eq||${id}`,
       join: new String().concat(
@@ -511,5 +511,5 @@ export class QuotationService {
 
   async getTotal(): Promise<number> {
     return this.quotationRepository.getTotalCount();
-  }
+  }*/
 }

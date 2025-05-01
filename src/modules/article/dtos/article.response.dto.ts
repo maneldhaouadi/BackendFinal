@@ -1,4 +1,3 @@
-import { faker } from '@faker-js/faker';
 import { ApiProperty } from '@nestjs/swagger';
 import { IsNumber, IsString, IsDate, IsOptional, IsBoolean } from 'class-validator';
 
@@ -7,41 +6,54 @@ export class ResponseArticleDto {
   @IsNumber()
   id: number;
 
-  @ApiProperty({ example: faker.commerce.product(), type: String })
+  @ApiProperty({ example: 'iPhone 14', type: String, required: false })
   @IsString()
-  title: string;
+  @IsOptional()
+  title?: string;
 
-  @ApiProperty({ example: faker.commerce.productDescription(), type: String })
+  @ApiProperty({ example: 'Smartphone Apple dernière génération', type: String, required: false })
   @IsString()
-  description: string;
+  @IsOptional()
+  description?: string;
 
-  @ApiProperty({ example: 'Électronique', type: String })
+  @ApiProperty({ example: 'A12345', type: String })
   @IsString()
-  category: string;
-
-  @ApiProperty({ example: 'Téléphones', type: String })
-  @IsString()
-  subCategory: string;
-
-  @ApiProperty({ example: 400.0, type: Number })
-  @IsNumber()
-  purchasePrice: number;
-
-  @ApiProperty({ example: 600.0, type: Number })
-  @IsNumber()
-  salePrice: number;
+  reference: string;
 
   @ApiProperty({ example: 50, type: Number })
   @IsNumber()
   quantityInStock: number;
 
-  @ApiProperty({ example: 'draft', type: String })
+  @ApiProperty({ example: 'draft', enum: ['draft', 'active', 'inactive', 'archived', 'out_of_stock', 'pending_review', 'deleted'] })
   @IsString()
   status: string;
 
   @ApiProperty({ example: 1, type: Number })
   @IsNumber()
   version: number;
+
+  @ApiProperty({ example: 'Note sur l\'article', type: String, required: false })
+  @IsString()
+  @IsOptional()
+  notes?: string;
+
+  @ApiProperty({
+    type: 'object',
+    required: false,
+    properties: {
+      data: { type: 'string', format: 'binary' },
+      filename: { type: 'string' },
+      mimeType: { type: 'string' },
+      size: { type: 'number' },
+    }
+  })
+  @IsOptional()
+  justificatifFile?: {
+    data: Buffer;
+    filename?: string;
+    mimeType?: string;
+    size?: number;
+  };
 
   @ApiProperty({ type: Date, required: false })
   @IsDate()
@@ -63,10 +75,34 @@ export class ResponseArticleDto {
   @IsOptional()
   isDeletionRestricted?: boolean;
 
-  @ApiProperty({ type: 'array', items: { type: 'object' } })
-  history: Array<{
+  @ApiProperty({
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        version: { type: 'number' },
+        changes: {
+          type: 'object',
+          additionalProperties: {
+            type: 'object',
+            properties: {
+              oldValue: {},
+              newValue: {},
+            }
+          }
+        },
+        date: { type: 'string', format: 'date-time' }
+      }
+    }
+  })
+  @IsOptional()
+  history?: Array<{
     version: number;
     changes: Record<string, { oldValue: any; newValue: any }>;
     date: Date;
   }>;
+
+  @ApiProperty({ example: 999.99, type: Number })
+  @IsNumber()
+  unitPrice: number;
 }

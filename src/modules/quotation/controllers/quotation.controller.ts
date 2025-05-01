@@ -41,7 +41,7 @@ export class QuotationController {
     private readonly invoiceService: InvoiceService,
   ) {}
 
-  @Get('/all')
+ /* @Get('/all')
   async findAll(
     @Query() options: IQueryObject,
   ): Promise<ResponseQuotationDto[]> {
@@ -188,5 +188,5 @@ export class QuotationController {
   ): Promise<ResponseQuotationDto> {
     req.logInfo = { id };
     return this.quotationService.softDelete(id);
-  }
+  }*/
 }

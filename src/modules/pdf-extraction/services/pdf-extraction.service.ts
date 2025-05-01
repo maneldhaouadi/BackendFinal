@@ -1,14 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { ArticleData } from 'src/modules/ocr/services/articleOcrService';
+import { ArticleData } from 'src/modules/article/interfaces/article-data.interface';
 
 
 @Injectable()
 export class PdfExtractionService {
   private pdfjs: any;
 
-  constructor() {
+ /* constructor() {
     this.initializePdfJs();
   }
 
