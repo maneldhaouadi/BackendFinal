@@ -23,7 +23,7 @@ export class ArticleExpensQuotationEntryService {
         private readonly calculationsService: InvoicingCalculationsService,
     ) {}
 
- /*   async saveMany(
+  async saveMany(
         createArticleExpensQuotationEntryDtos: CreateArticleExpensQuotationEntryDto[],
     ): Promise<ArticleExpensQuotationEntryEntity[]> {
         const savedEntries = [];
@@ -213,7 +213,6 @@ export class ArticleExpensQuotationEntryService {
       }
 
 
-     */ 
 }
 
 

@@ -34,7 +34,7 @@ export class ArticleEntity extends EntityHelper {
   notes: string;
 
   @Column({ type: 'longblob', nullable: true })
-  justificatifFile: Buffer;
+  justificatifFile: Express.Multer.File;
 
   @Column({ length: 255, nullable: true })
   justificatifFileName: string;

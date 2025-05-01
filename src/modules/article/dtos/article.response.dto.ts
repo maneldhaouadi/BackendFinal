@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsString, IsDate, IsOptional, IsBoolean } from 'class-validator';
+import { IsNumber, IsString, IsDate, IsOptional, IsBoolean, IsEnum } from 'class-validator';
+import { ArticleStatus } from '../interfaces/article-data.interface';
 
 export class ResponseArticleDto {
   @ApiProperty({ example: 1, type: Number })
@@ -24,9 +25,12 @@ export class ResponseArticleDto {
   @IsNumber()
   quantityInStock: number;
 
-  @ApiProperty({ example: 'draft', enum: ['draft', 'active', 'inactive', 'archived', 'out_of_stock', 'pending_review', 'deleted'] })
-  @IsString()
-  status: string;
+  @ApiProperty({ 
+    example: 'draft', 
+    enum: ['draft', 'active', 'inactive', 'archived', 'out_of_stock', 'pending_review', 'deleted'] 
+  })
+  @IsEnum(['draft', 'active', 'inactive', 'archived', 'out_of_stock', 'pending_review', 'deleted'])
+  status: ArticleStatus; // Changé de string à ArticleStatus
 
   @ApiProperty({ example: 1, type: Number })
   @IsNumber()
@@ -37,23 +41,22 @@ export class ResponseArticleDto {
   @IsOptional()
   notes?: string;
 
-  @ApiProperty({
-    type: 'object',
-    required: false,
-    properties: {
-      data: { type: 'string', format: 'binary' },
-      filename: { type: 'string' },
-      mimeType: { type: 'string' },
-      size: { type: 'number' },
-    }
-  })
+  // Simplifié pour correspondre à l'entity
+  @ApiProperty({ type: 'string', format: 'binary', required: false })
   @IsOptional()
-  justificatifFile?: {
-    data: Buffer;
-    filename?: string;
-    mimeType?: string;
-    size?: number;
-  };
+  justificatifFile?:  Express.Multer.File;
+
+  @ApiProperty({ type: 'string', required: false })
+  @IsOptional()
+  justificatifFileName?: string;
+
+  @ApiProperty({ type: 'string', required: false })
+  @IsOptional()
+  justificatifMimeType?: string;
+
+  @ApiProperty({ type: 'number', required: false })
+  @IsOptional()
+  justificatifFileSize?: number;
 
   @ApiProperty({ type: Date, required: false })
   @IsDate()
@@ -70,10 +73,11 @@ export class ResponseArticleDto {
   @IsOptional()
   deletedAt?: Date;
 
-  @ApiProperty({ type: Boolean, required: false })
-  @IsBoolean()
-  @IsOptional()
-  isDeletionRestricted?: boolean;
+  @ApiProperty({ example: 999.99, type: Number })
+  @IsNumber()
+  unitPrice: number;
+
+  // Supprimé isDeletionRestricted car absent de l'entity
 
   @ApiProperty({
     type: 'array',
@@ -101,8 +105,4 @@ export class ResponseArticleDto {
     changes: Record<string, { oldValue: any; newValue: any }>;
     date: Date;
   }>;
-
-  @ApiProperty({ example: 999.99, type: Number })
-  @IsNumber()
-  unitPrice: number;
 }

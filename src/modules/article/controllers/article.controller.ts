@@ -52,16 +52,10 @@ export class ArticleController {
       status: entity.status,
       version: entity.version,
       notes: entity.notes,
-      justificatifFile: entity.justificatifFile ? {
-        data: entity.justificatifFile,
-        filename: entity.justificatifFileName,
-        mimeType: entity.justificatifMimeType,
-        size: entity.justificatifFileSize
-      } : undefined,
+      justificatifFile: entity.justificatifFile,
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt,
       deletedAt: entity.deletedAt,
-      isDeletionRestricted: entity.isDeletionRestricted,
       history: entity.history?.map(history => ({
         version: history.version,
         changes: history.changes,

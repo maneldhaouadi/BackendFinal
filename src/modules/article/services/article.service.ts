@@ -116,31 +116,36 @@ export class ArticleService {
 
   async save(
     createArticleDto: CreateArticleDto & { justificatifFile?: Express.Multer.File }
-  ): Promise<ArticleEntity> {
+): Promise<ArticleEntity> {
     const articleData: DeepPartial<ArticleEntity> = {
-      title: createArticleDto.title,
-      description: createArticleDto.description,
-      reference: createArticleDto.reference,
-      quantityInStock: createArticleDto.quantityInStock,
-      unitPrice: createArticleDto.unitPrice,
-      status: createArticleDto.status as ArticleStatus || 'draft', // Conversion explicite ici
-      notes: createArticleDto.notes,
+        title: createArticleDto.title,
+        description: createArticleDto.description,
+        reference: createArticleDto.reference,
+        quantityInStock: createArticleDto.quantityInStock,
+        unitPrice: createArticleDto.unitPrice,
+        status: createArticleDto.status as ArticleStatus || 'draft',
+        notes: createArticleDto.notes,
     };
 
     if (createArticleDto.justificatifFile) {
-      articleData.justificatifFile = createArticleDto.justificatifFile.buffer;
-      articleData.justificatifFileName = createArticleDto.justificatifFile.originalname;
-      articleData.justificatifMimeType = createArticleDto.justificatifFile.mimetype;
-      articleData.justificatifFileSize = createArticleDto.justificatifFile.size;
+        articleData.justificatifFile = {
+            buffer: createArticleDto.justificatifFile.buffer,
+            originalname: createArticleDto.justificatifFile.originalname,
+            mimetype: createArticleDto.justificatifFile.mimetype,
+            size: createArticleDto.justificatifFile.size
+        };
+        articleData.justificatifFileName = createArticleDto.justificatifFile.originalname;
+        articleData.justificatifMimeType = createArticleDto.justificatifFile.mimetype;
+        articleData.justificatifFileSize = createArticleDto.justificatifFile.size;
     }
 
     try {
-      const article = this.articleRepository.create(articleData);
-      return await this.articleRepository.save(article);
+        const article = this.articleRepository.create(articleData);
+        return await this.articleRepository.save(article);
     } catch (error) {
-      this.handleSaveError(error, createArticleDto.reference);
+        this.handleSaveError(error, createArticleDto.reference);
     }
-  }
+}
 
   async saveMany(
     createArticleDtos: (CreateArticleDto & { justificatifFile?: Express.Multer.File })[]
@@ -148,7 +153,8 @@ export class ArticleService {
     try {
       return await Promise.all(
         createArticleDtos.map(async dto => {
-          const entity = this.articleRepository.create({
+          // Création de l'objet partiel pour l'entité
+          const entityData: DeepPartial<ArticleEntity> = {
             title: dto.title,
             description: dto.description,
             reference: dto.reference,
@@ -156,13 +162,33 @@ export class ArticleService {
             unitPrice: dto.unitPrice,
             status: (dto.status as ArticleStatus) || 'draft',
             notes: dto.notes,
-            ...(dto.justificatifFile && {
-              justificatifFile: dto.justificatifFile.buffer,
-              justificatifFileName: dto.justificatifFile.originalname,
-              justificatifMimeType: dto.justificatifFile.mimetype,
-              justificatifFileSize: dto.justificatifFile.size
-            })
-          });
+          };
+  
+          // Ajout des propriétés du fichier si présent
+          if (dto.justificatifFile) {
+            // Création d'un objet File compatible
+            const file: Express.Multer.File = {
+              ...dto.justificatifFile,
+              buffer: dto.justificatifFile.buffer,
+              originalname: dto.justificatifFile.originalname,
+              mimetype: dto.justificatifFile.mimetype,
+              size: dto.justificatifFile.size,
+              // Propriétés optionnelles avec valeurs par défaut
+              fieldname: dto.justificatifFile.fieldname || 'justificatifFile',
+              encoding: dto.justificatifFile.encoding || '7bit',
+              stream: null,
+              destination: '',
+              filename: dto.justificatifFile.originalname,
+              path: ''
+            };
+  
+            entityData.justificatifFile = file;
+            entityData.justificatifFileName = file.originalname;
+            entityData.justificatifMimeType = file.mimetype;
+            entityData.justificatifFileSize = file.size;
+          }
+  
+          const entity = this.articleRepository.create(entityData);
           return this.articleRepository.save(entity);
         })
       );
@@ -209,18 +235,28 @@ export class ArticleService {
         createdAt: entity.createdAt,
         updatedAt: entity.updatedAt,
         deletedAt: entity.deletedAt ?? undefined,
-        isDeletionRestricted: entity.isDeletionRestricted ?? undefined,
+        // Ajout des propriétés séparées pour le fichier
+        justificatifFileName: entity.justificatifFileName ?? undefined,
+        justificatifMimeType: entity.justificatifMimeType ?? undefined,
+        justificatifFileSize: entity.justificatifFileSize ?? undefined
       };
   
       if (entity.justificatifFile) {
+        // Construction d'un objet Express.Multer.File complet
         dto.justificatifFile = {
-          data: entity.justificatifFile,
-          filename: entity.justificatifFileName ?? undefined,
-          mimeType: entity.justificatifMimeType ?? undefined,
-          size: entity.justificatifFileSize ?? undefined
-        };
+          fieldname: 'justificatifFile',
+          originalname: entity.justificatifFileName,
+          encoding: '7bit',
+          mimetype: entity.justificatifMimeType,
+          size: entity.justificatifFileSize,
+          buffer: entity.justificatifFile.buffer,
+          stream: null,
+          destination: '',
+          filename: entity.justificatifFileName,
+          path: ''
+        } as Express.Multer.File;
       }
-
+  
       if (entity.history) {
         dto.history = entity.history.map(historyItem => ({
           version: historyItem.version,
@@ -267,7 +303,7 @@ export class ArticleService {
   
     // 4. Gérer le fichier justificatif si présent
     if (updateData.justificatifFile) {
-      updatePayload.justificatifFile = updateData.justificatifFile.buffer;
+      updatePayload.justificatifFile = updateData.justificatifFile;
       updatePayload.justificatifFileName = updateData.justificatifFile.originalname;
       updatePayload.justificatifMimeType = updateData.justificatifFile.mimetype;
       updatePayload.justificatifFileSize = updateData.justificatifFile.size;
@@ -416,36 +452,48 @@ export class ArticleService {
   
     return this.mapToResponseDto(article);
   }
-
   private mapToResponseDto(entity: ArticleEntity): ResponseArticleDto {
-    return {
-      id: entity.id,
-      title: entity.title,
-      description: entity.description,
-      reference: entity.reference,
-      quantityInStock: entity.quantityInStock,
-      unitPrice: entity.unitPrice,
-      status: entity.status,
-      version: entity.version,
-      notes: entity.notes,
-      justificatifFile: entity.justificatifFile ? {
-        data: entity.justificatifFile,
-        filename: entity.justificatifFileName,
-        mimeType: entity.justificatifMimeType,
-        size: entity.justificatifFileSize
-      } : undefined,
-      createdAt: entity.createdAt,
-      updatedAt: entity.updatedAt,
-      deletedAt: entity.deletedAt,
-      isDeletionRestricted: entity.isDeletionRestricted,
-      history: entity.history?.map(history => ({
-        version: history.version,
-        changes: history.changes,
-        date: history.date
-      }))
+    const dto: ResponseArticleDto = {
+        id: entity.id,
+        title: entity.title ?? undefined,
+        description: entity.description ?? undefined,
+        reference: entity.reference,
+        quantityInStock: entity.quantityInStock,
+        unitPrice: entity.unitPrice,
+        status: entity.status,
+        version: entity.version,
+        notes: entity.notes ?? undefined,
+        createdAt: entity.createdAt,
+        updatedAt: entity.updatedAt,
+        deletedAt: entity.deletedAt ?? undefined,
     };
-  }
 
+    if (entity.justificatifFile) {
+        // Construction d'un objet Express.Multer.File complet
+        dto.justificatifFile = {
+            fieldname: 'justificatifFile',
+            originalname: entity.justificatifFileName,
+            encoding: '7bit',
+            mimetype: entity.justificatifMimeType,
+            size: entity.justificatifFileSize,
+            buffer: entity.justificatifFile.buffer,
+            stream: null,
+            destination: '',
+            filename: entity.justificatifFileName,
+            path: ''
+        } as Express.Multer.File;
+    }
+
+    if (entity.history) {
+        dto.history = entity.history.map(historyItem => ({
+            version: historyItem.version,
+            changes: historyItem.changes,
+            date: historyItem.date
+        }));
+    }
+
+    return dto;
+}
   async restoreArticleVersion(articleId: number, targetVersion: number): Promise<ArticleEntity> {
     // Utilisation d'une transaction pour garantir l'intégrité des données
     const queryRunner = this.dataSource.createQueryRunner();
