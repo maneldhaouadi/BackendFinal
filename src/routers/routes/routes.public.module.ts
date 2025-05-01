@@ -62,6 +62,8 @@ import { UserController } from 'src/modules/user/controllers/user.controller';
 import { UsersModule } from 'src/modules/user/user.module';
 import { FirmInterlocutorEntryController } from 'src/modules/firm-interlocutor-entry/controllers/firm-interlocutor-entry.controller.ts';
 import { PdfModule } from 'src/modules/pdf-extraction/pdf.module';
+import { TemplateModule } from 'src/modules/template/template.module';
+import { TemplateController } from 'src/modules/template/controllers/Template.controller';
 
 @Module({
   controllers: [
@@ -94,7 +96,8 @@ import { PdfModule } from 'src/modules/pdf-extraction/pdf.module';
     ExpensePaymentConditionController,
     ArticleHistoryController,
     DialogflowController,
-    OcrController
+    OcrController,
+    TemplateController
   ],
   providers: [],
   exports: [],
@@ -131,6 +134,7 @@ import { PdfModule } from 'src/modules/pdf-extraction/pdf.module';
     DialogflowModule,
     OcrModule,
     PdfModule,
+    TemplateModule
   ],
 })
 export class RoutesPublicModule {}

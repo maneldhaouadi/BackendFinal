@@ -12,6 +12,7 @@ import { BankAccountEntity } from 'src/modules/bank-account/repositories/entitie
 import { ExpensQuotationUploadEntity } from './expensquotation-file.entity';
 import { ExpenseInvoiceEntity } from 'src/modules/expense-invoice/repositories/entities/expense-invoice.entity';
 import { UploadEntity } from 'src/common/storage/repositories/entities/upload.entity';
+import { Template } from 'src/modules/template/repositories/entities/template.entity';
 
 @Entity('expense_quotation')
 export class ExpensQuotationEntity extends EntityHelper {
@@ -120,4 +121,8 @@ expensearticleQuotationEntries: ArticleExpensQuotationEntryEntity[];
   
   @Column({ type: 'int', nullable: true })
   pdfFileId: number;
+
+/*@ManyToOne(() => Template, { nullable: true })
+@JoinColumn({ name: 'template_id' })
+template: Template;*/
 }

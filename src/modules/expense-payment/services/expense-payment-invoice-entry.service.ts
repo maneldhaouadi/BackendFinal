@@ -41,7 +41,7 @@ async save(createPaymentInvoiceEntryDto: ExpenseCreatePaymentInvoiceEntryDto): P
   // 1. Récupération de la facture avec les paiements existants
   const invoice = await this.expenseInvoiceService.findOneByCondition({
     filter: `id||$eq||${createPaymentInvoiceEntryDto.expenseInvoiceId}`,
-    join: 'currency,firm,paymentEntries',
+    join: 'currency,firm,payments',
   });
 
   if (!invoice) {
@@ -276,106 +276,59 @@ async update(
 async softDelete(id: number): Promise<ExpensePaymentInvoiceEntryEntity> {
   const existingEntry = await this.findOneByCondition({
     filter: `id||$eq||${id}`,
-    join: 'payment',
   });
 
-  const existingInvoice = await this.expenseInvoiceService.findOneByCondition({
+  if (!existingEntry) {
+    throw new NotFoundException('Payment entry not found');
+  }
+
+  const invoice = await this.expenseInvoiceService.findOneByCondition({
     filter: `id||$eq||${existingEntry.expenseInvoiceId}`,
     join: 'currency',
   });
 
-  const zero = dinero({
+  const createDinero = (amount: number) => dinero({
     amount: createDineroAmountFromFloatWithDynamicCurrency(
-      0,
-      existingInvoice.currency.digitAfterComma,
+      amount, 
+      invoice.currency.digitAfterComma
     ),
-    precision: existingInvoice.currency.digitAfterComma,
+    precision: invoice.currency.digitAfterComma,
   });
 
-  const totalAmountPaid = dinero({
-    amount: createDineroAmountFromFloatWithDynamicCurrency(
-      existingInvoice.amountPaid,
-      existingInvoice.currency.digitAfterComma,
+  const currentPaid = createDinero(invoice.amountPaid);
+  const entryAmount = createDinero(existingEntry.amount);
+  const updatedPaid = currentPaid.subtract(entryAmount);
+
+  // Garantir que le montant ne devient pas négatif
+  const finalAmountPaid = Math.max(updatedPaid.toUnit(), 0);
+
+  await this.expenseInvoiceService.updateFields(invoice.id, {
+    amountPaid: finalAmountPaid,
+    status: this.calculateNewStatus(
+      createDinero(finalAmountPaid),
+      createDinero(invoice.total),
+      createDinero(invoice.taxWithholdingAmount || 0)
     ),
-    precision: existingInvoice.currency.digitAfterComma,
   });
-
-  const amountToDeduct = dinero({
-    amount: createDineroAmountFromFloatWithDynamicCurrency(
-      existingEntry.amount,
-      existingInvoice.currency.digitAfterComma,
-    ),
-    precision: existingInvoice.currency.digitAfterComma,
-  });
-
-  const taxWithholdingAmount = dinero({
-    amount: createDineroAmountFromFloatWithDynamicCurrency(
-      existingInvoice.taxWithholdingAmount,
-      existingInvoice.currency.digitAfterComma,
-    ),
-    precision: existingInvoice.currency.digitAfterComma,
-  });
-
-  const updatedAmountPaid = totalAmountPaid.subtract(amountToDeduct);
-
-  const invoiceTotal = dinero({
-    amount: createDineroAmountFromFloatWithDynamicCurrency(
-      existingInvoice.total,
-      existingInvoice.currency.digitAfterComma,
-    ),
-    precision: existingInvoice.currency.digitAfterComma,
-  });
-
-  const newInvoiceStatus = updatedAmountPaid.equalsTo(zero)
-    ? EXPENSE_INVOICE_STATUS.Unpaid
-    : updatedAmountPaid.add(taxWithholdingAmount).equalsTo(invoiceTotal)
-      ? EXPENSE_INVOICE_STATUS.Paid
-      : EXPENSE_INVOICE_STATUS.PartiallyPaid;
-
-  await this.expenseInvoiceService.updateFields(existingInvoice.id, {
-    amountPaid: updatedAmountPaid.toUnit(),
-    status: newInvoiceStatus,
-  });
-
-  // Si le montant payé est revenu à zéro, supprimer la facture
-  if (updatedAmountPaid.equalsTo(zero)) {
-    await this.expenseInvoiceService.softDelete(existingInvoice.id);
-  }
 
   return this.expensePaymentInvoiceEntryRepository.softDelete(id);
 }
 
-private async updateInvoiceStatus(
-  invoice: ExpenseInvoiceEntity,
-  updatedAmountPaid: dinero.Dinero,
-): Promise<void> {
-  const zero = dinero({ amount: 0, precision: invoice.currency.digitAfterComma });
-  const invoiceTotal = dinero({
-    amount: createDineroAmountFromFloatWithDynamicCurrency(
-      invoice.total,
-      invoice.currency.digitAfterComma,
-    ),
-    precision: invoice.currency.digitAfterComma,
-  });
+private calculateNewStatus(
+  amountPaid: dinero.Dinero,
+  total: dinero.Dinero,
+  taxWithholding: dinero.Dinero
+): EXPENSE_INVOICE_STATUS {
+  const zero = dinero({ amount: 0, precision: amountPaid.getPrecision() });
+  const totalWithTax = total.subtract(taxWithholding);
 
-  const taxWithholdingAmount = dinero({
-    amount: createDineroAmountFromFloatWithDynamicCurrency(
-      invoice.taxWithholdingAmount,
-      invoice.currency.digitAfterComma,
-    ),
-    precision: invoice.currency.digitAfterComma,
-  });
-
-  const newStatus = updatedAmountPaid.equalsTo(zero)
-    ? EXPENSE_INVOICE_STATUS.Unpaid
-    : updatedAmountPaid.add(taxWithholdingAmount).equalsTo(invoiceTotal)
-      ? EXPENSE_INVOICE_STATUS.Paid
-      : EXPENSE_INVOICE_STATUS.PartiallyPaid;
-
-  await this.expenseInvoiceService.updateFields(invoice.id, {
-    amountPaid: updatedAmountPaid.toUnit(),
-    status: newStatus,
-  });
+  if (amountPaid.equalsTo(zero)) {
+    return EXPENSE_INVOICE_STATUS.Unpaid;
+  } else if (amountPaid.equalsTo(totalWithTax)) {
+    return EXPENSE_INVOICE_STATUS.Paid;
+  } else {
+    return EXPENSE_INVOICE_STATUS.PartiallyPaid;
+  }
 }
 
   @Transactional()

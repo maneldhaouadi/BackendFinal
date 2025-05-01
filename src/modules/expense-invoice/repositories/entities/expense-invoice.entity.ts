@@ -23,6 +23,7 @@ import { EXPENSE_INVOICE_STATUS } from '../../enums/expense-invoice-status.enum'
 import { ExpensQuotationEntity } from 'src/modules/expense_quotation/repositories/entities/expensquotation.entity';
 import { ExpensePaymentInvoiceEntryEntity } from 'src/modules/expense-payment/repositories/entities/expense-payment-invoice-entry.entity';
 import { UploadEntity } from 'src/common/storage/repositories/entities/upload.entity';
+import { Template } from 'src/modules/template/repositories/entities/template.entity';
 
 @Entity('expense_invoice')
 export class ExpenseInvoiceEntity extends EntityHelper {
@@ -150,5 +151,10 @@ uploadPdfField: UploadEntity;
 
 @Column({ type: 'int', nullable: true })
 pdfFileId: number;
+
+/*@ManyToOne(() => Template, { nullable: true })
+@JoinColumn({ name: 'template_id' })
+template: Template;
+*/
 }
 

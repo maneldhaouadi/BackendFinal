@@ -624,22 +624,21 @@ private async processInvoiceEntries(
 }
 @Transactional()
 async softDelete(id: number): Promise<ExpensePaymentEntity> {
-  // 1. Trouver le paiement avec ses entrées de facture
-  const existingPayment = await this.findOneByCondition({
-    filter: `id||$eq||${id}`,
-    join: 'invoices',
+  const existingPayment = await this.expenesePaymentRepository.findOne({
+    where: { id },
+    relations: ['invoices'],
   });
 
-  // 2. Pour chaque facture associée, la supprimer individuellement
-  for (const invoiceEntry of existingPayment.invoices) {
-    // D'abord supprimer l'entrée de paiement de facture
-    await this.expensePaymentInvoiceEntryService.softDelete(invoiceEntry.id);
-    
-    // Ensuite supprimer la facture elle-même
-    await this.expenseInvoiceService.softDelete(invoiceEntry.expenseInvoiceId);
+  if (!existingPayment) {
+    throw new NotFoundException('Payment not found');
   }
 
-  // 3. Finalement supprimer le paiement
+  // Supprimez d'abord toutes les entrées liées
+  for (const invoiceEntry of existingPayment.invoices) {
+    await this.expensePaymentInvoiceEntryService.softDelete(invoiceEntry.id);
+  }
+
+  // Puis supprimez le paiement principal
   return this.expenesePaymentRepository.softDelete(id);
 }
 @Transactional()
