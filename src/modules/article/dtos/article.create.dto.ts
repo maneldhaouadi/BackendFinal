@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsOptional, IsNumber, Matches } from 'class-validator';
+import { ArticleStatus } from '../interfaces/article-data.interface';
 
 export class CreateArticleDto {
   @ApiProperty({ example: 'iPhone 15 Pro', required: false })
@@ -29,7 +30,7 @@ export class CreateArticleDto {
     example: 'active'
   })
   @IsString()
-  status: string;
+  status: ArticleStatus;
 
   @ApiProperty({ example: 'Special edition', required: false })
   @IsString()

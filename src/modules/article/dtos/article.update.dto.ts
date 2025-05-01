@@ -48,7 +48,7 @@ export class UpdateArticleDto {
     description: 'Justificatif mis à jour au format fichier'
   })
   @IsOptional()
-  justificatifFile?: any;
+  justificatifFile?: Express.Multer.File;
 
   @ApiProperty({ required: false, example: 1099.99 })
   @IsNumber()

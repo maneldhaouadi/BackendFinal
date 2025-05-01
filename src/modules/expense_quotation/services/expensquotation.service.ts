@@ -54,8 +54,7 @@ export class ExpensQuotationService {
     private readonly pdfService: PdfService,
   ) {}
 
-/*
-  
+
 
   async findOneByCondition(
     query: IQueryObject,
@@ -714,7 +713,7 @@ async updateQuotationStatusIfExpired(quotationId: number): Promise<ExpensQuotati
     }
   
     return quotation;
-  }*/
+  }
 
 
 
