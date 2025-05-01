@@ -211,38 +211,21 @@ async getStockHealth() {
     return await this.articleService.findAllPaginated(query);
   }
   
-  
   @Put('/update/:id')
-  @UseInterceptors(FileInterceptor('justificatifFile'))
-  @ApiOperation({ summary: 'Mettre à jour un article' })
-  @ApiConsumes('multipart/form-data')
-  async update(
-    @Param('id', ParseIntPipe) id: number,
-    @UploadedFile() file: Express.Multer.File,
-    @Body() updateArticleDto: UpdateArticleDto,
-  ): Promise<ResponseArticleDto> {
-    // Valider les transitions de statut si le statut est modifié
-    if (updateArticleDto.status) {
-      const article = await this.articleService.findOneById(id);
-      if (!this.articleService.isStatusTransitionValid(article.status, updateArticleDto.status)) {
-        throw new BadRequestException(
-          `Transition de statut invalide: ${article.status} -> ${updateArticleDto.status}`
-        );
-      }
-      
-      if (updateArticleDto.status === 'active' && (!updateArticleDto.title || !updateArticleDto.reference)) {
-        throw new BadRequestException(
-          'Un article actif doit avoir un titre et une référence'
-        );
-      }
-    }
-  
-    const updatedArticle = await this.articleService.update(id, {
-      ...updateArticleDto,
-      justificatifFile: file
-    });
-    return this.mapToResponseDto(updatedArticle);
-  }
+@UseInterceptors(FileInterceptor('justificatifFile'))
+@ApiOperation({ summary: 'Mettre à jour un article' })
+@ApiConsumes('multipart/form-data')
+async update(
+  @Param('id', ParseIntPipe) id: number,
+  @UploadedFile() file: Express.Multer.File,
+  @Body() updateArticleDto: UpdateArticleDto,
+): Promise<ResponseArticleDto> {
+  const updatedArticle = await this.articleService.update(id, {
+    ...updateArticleDto,
+    justificatifFile: file
+  });
+  return this.mapToResponseDto(updatedArticle);
+}
 
   @Get('/:id')
   @ApiOperation({ summary: 'Obtenir un article par son ID' })

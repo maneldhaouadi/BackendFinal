@@ -249,13 +249,23 @@ export class ArticleService {
       justificatifFile?: Express.Multer.File;
     }
   ): Promise<ArticleEntity> {
+    // 1. Récupérer l'article existant
     const article = await this.findOneById(id);
     
+    // 2. Vérifier si l'article est archivé
+    if (article.status === 'archived') {
+      throw new BadRequestException(
+        'Les articles avec le statut "archived" ne peuvent pas être modifiés.'
+      );
+    }
+  
+    // 3. Préparer les données de mise à jour
     const updatePayload: Partial<ArticleEntity> = {
       ...updateData,
       version: article.version + 1
     };
   
+    // 4. Gérer le fichier justificatif si présent
     if (updateData.justificatifFile) {
       updatePayload.justificatifFile = updateData.justificatifFile.buffer;
       updatePayload.justificatifFileName = updateData.justificatifFile.originalname;
@@ -263,17 +273,84 @@ export class ArticleService {
       updatePayload.justificatifFileSize = updateData.justificatifFile.size;
     }
   
+    // 5. Enregistrer les changements dans l'historique
     const changes = this.getChanges(article, updatePayload);
-    
     await this.articleHistoryService.createHistoryEntry({
       version: updatePayload.version,
       changes,
       articleId: id
     });
   
+    // 6. Effectuer la mise à jour
     await this.articleRepository.update(id, updatePayload);
     
+    // 7. Retourner l'article mis à jour
     return this.articleRepository.findOneById(id) as Promise<ArticleEntity>;
+  }
+
+  
+  private checkUpdateRestrictions(
+    currentStatus: ArticleStatus,
+    updateData: Partial<UpdateArticleDto>
+  ): void {
+    // Liste des champs qui peuvent toujours être modifiés
+    const alwaysUpdatableFields = ['status', 'notes', 'quantityInStock'];
+    
+    // Vérifier si on essaie de modifier autre chose que les champs toujours modifiables
+    const restrictedFields = Object.keys(updateData).filter(
+      field => !alwaysUpdatableFields.includes(field)
+    );
+
+    if (restrictedFields.length === 0) {
+      return; // Aucune restriction nécessaire
+    }
+
+    // Restrictions basées sur le statut
+    switch(currentStatus) {
+      case 'inactive':
+        // Pour les articles inactifs, on ne peut modifier que le statut (pour les réactiver)
+        throw new BadRequestException(
+          'Les articles inactifs ne peuvent pas être modifiés. Activez-les d\'abord.'
+        );
+
+      case 'out_of_stock':
+        // Pour les articles en rupture de stock, restrictions similaires
+        throw new BadRequestException(
+          'Les articles en rupture de stock ne peuvent pas être modifiés. Réapprovisionnez-les d\'abord.'
+        );
+
+      case 'archived':
+      case 'deleted':
+        // Pas de modifications possibles pour ces statuts
+        throw new BadRequestException(
+          `Les articles avec le statut "${currentStatus}" ne peuvent pas être modifiés.`
+        );
+
+      case 'draft':
+      case 'pending_review':
+      case 'active':
+        // Pas de restrictions pour ces statuts
+        break;
+
+      default:
+        throw new BadRequestException(
+          `Statut "${currentStatus}" non reconnu.`
+        );
+    }
+  }
+//
+  private isStatusTransitionValid(currentStatus: ArticleStatus, newStatus: ArticleStatus): boolean {
+    const validTransitions: Record<ArticleStatus, ArticleStatus[]> = {
+      draft: ['active', 'pending_review', 'deleted'],
+      pending_review: ['draft', 'active', 'deleted'],
+      active: ['inactive', 'out_of_stock', 'deleted'],
+      inactive: ['active', 'archived', 'deleted'],
+      out_of_stock: ['active', 'archived', 'deleted'],
+      archived: [], // Aucune transition possible depuis archived
+      deleted: [] // Aucune transition possible depuis deleted
+    };
+  
+    return validTransitions[currentStatus].includes(newStatus);
   }
 
   private getChanges(
@@ -722,21 +799,7 @@ async comparePriceTrends(): Promise<{
   };
 }
 
-//
-// In ArticleService
-public isStatusTransitionValid(currentStatus: ArticleStatus, newStatus: ArticleStatus): boolean {
-  const validTransitions: Record<ArticleStatus, ArticleStatus[]> = {
-    draft: ['active', 'pending_review'],
-    pending_review: ['draft', 'active'],
-    active: ['inactive', 'out_of_stock'],
-    inactive: ['active', 'archived'],
-    out_of_stock: ['active', 'archived'],
-    archived: [], // Aucune transition possible depuis archived
-    deleted: [] // Aucune transition possible depuis deleted
-  };
 
-  return validTransitions[currentStatus].includes(newStatus);
-}
 
 // Dans ArticleService
 
