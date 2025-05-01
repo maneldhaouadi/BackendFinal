@@ -19,6 +19,9 @@ import { ExpenseArticleInvoiceEntryTaxService } from './services/expense-article
 import { ExpenseInvoiceRepositoryModule } from './repositories/expense-invoice.repository.module';
 import { ExpensQuotationService } from '../expense_quotation/services/expensquotation.service';
 import { ExpenseQuotationModule } from '../expense_quotation/expensquotation.module';
+import { ExpensePaymentInvoiceEntryEntity } from '../expense-payment/repositories/entities/expense-payment-invoice-entry.entity';
+import { ExpensePaymentModule } from '../expense-payment/expense-payment.module';
+import { ExpensePaymentInvoiceEntryService } from '../expense-payment/services/expense-payment-invoice-entry.service';
 
 @Module({
   controllers: [],
@@ -47,7 +50,7 @@ import { ExpenseQuotationModule } from '../expense_quotation/expensquotation.mod
     GatewaysModule,
     CalculationsModule,
     StorageModule,
-    ExpenseQuotationModule
+    ExpenseQuotationModule,
   ],
 })
 export class ExpenseInvoiceModule {}

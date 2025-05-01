@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title><%= meta.type || 'Document' %></title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .dynamic-field { background-color: #f5f5f5; padding: 2px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <% if (templateContent) { %>
+    <%- templateContent %>
+  <% } else { %>
+    <!-- Contenu par défaut si aucun template n'est fourni -->
+    <h1><%= meta.type %> N°<%= quotation.sequential %></h1>
+    <p>Date: <%= quotation.date %></p>
+    <p>Client: <%= quotation.firm.name %></p>
+  <% } %>
+</body>
+</html>

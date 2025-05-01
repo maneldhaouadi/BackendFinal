@@ -14,6 +14,7 @@ import { ExpensePaymentUploadEntity } from './expense-payment-file.entity';
 import { ExpensePaymentInvoiceEntryEntity } from './expense-payment-invoice-entry.entity';
 import { PAYMENT_MODE } from '../../enums/expense-payment-mode.enum';
 import { UploadEntity } from 'src/common/storage/repositories/entities/upload.entity';
+import { Template } from 'src/modules/template/repositories/entities/template.entity';
 
 @Entity('expense_payment')
 export class ExpensePaymentEntity extends EntityHelper {
@@ -77,4 +78,8 @@ export class ExpensePaymentEntity extends EntityHelper {
 
   @Column({ type: 'int', nullable: true })
   targetCurrencyId: number;
+
+ /* @ManyToOne(() => Template, { nullable: true })
+@JoinColumn({ name: 'template_id' })
+template: Template;*/
 }

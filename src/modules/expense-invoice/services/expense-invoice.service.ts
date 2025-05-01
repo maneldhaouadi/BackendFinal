@@ -579,42 +579,10 @@ if (updateInvoiceDto.uploads) {
   }
 
 
-  async softDelete(id: number): Promise<{ invoice: ExpenseInvoiceEntity; quotationDeleted: boolean; quotationSequential?: string }> {
-    // 1. Récupérer la facture avec la relation quotation
-    const invoice = await this.invoiceRepository.findOne({
-        where: { id },
-        relations: ['quotation']
-    });
-
-    if (!invoice) {
-        throw new ExpenseInvoiceNotFoundException();
-    }
-
-    let quotationDeleted = false;
-    let quotationSequential: string | undefined;
-
-    // 2. Si devis associé, le supprimer d'abord
-    if (invoice.quotation) {
-        try {
-            quotationSequential = invoice.quotation.sequential;
-            await this.expenseQuotationService.softDelete(invoice.quotation.id);
-            quotationDeleted = true;
-        } catch (error) {
-            throw new Error(
-                `La facture n'a pas pu être supprimée car le devis associé n'a pas pu être supprimé: ${error.message}`
-            );
-        }
-    }
-
-    // 3. Supprimer la facture
-    await this.invoiceRepository.softDelete(id);
-    
-    return { 
-        invoice,
-        quotationDeleted,
-        quotationSequential
-    };
-}
+  async softDelete(id: number): Promise<ExpenseInvoiceEntity> {
+    await this.findOneById(id);
+    return this.invoiceRepository.softDelete(id);
+  }
   async deleteAll() {
     return this.invoiceRepository.deleteAll();
   }
