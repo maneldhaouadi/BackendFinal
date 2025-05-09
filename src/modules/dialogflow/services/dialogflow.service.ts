@@ -39,7 +39,7 @@ export class DialogflowService {
     private readonly historyRepository: HistoryRepository,
 
   ) {
-   /* const filePath = 'src/projetadopet-9d2f2-7bd0022ebee4.json';
+    const filePath = 'src/projetadopet-9d2f2-7bd0022ebee4.json';
     try {
       const fileContent = fs.readFileSync(filePath, 'utf8');
       this.CREDENTIALS = JSON.parse(fileContent);
@@ -284,7 +284,7 @@ export class DialogflowService {
               quantity: params.quantity?.numberValue || 1,
               discount: params.discount?.numberValue || 0,
               discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE,
-              unit_price: articleInfo.salePrice
+              unit_price: articleInfo.unitPrice
             });
           }
   
@@ -480,8 +480,7 @@ private async addArticleToQuotation(
         id: params.articleId,
         title: `Article ${params.articleId}`,
         description: 'Créé automatiquement',
-        salePrice: params.unit_price || 100,
-        purchasePrice: params.unit_price ? params.unit_price * 0.8 : 80,
+        unitPrice: params.unit_price || 100,
         quantityInStock: 0,
         status: 'active',
         version: 1
@@ -493,13 +492,13 @@ private async addArticleToQuotation(
     const articleEntry = this.articleEntryRepository.create({
       article: article,
       quantity: params.quantity,
-      unit_price: params.unit_price ?? article.salePrice,
+      unit_price: params.unit_price,
       discount: params.discount || 0,
       discount_type: params.discount_type || DISCOUNT_TYPES.PERCENTAGE,
-      subTotal: (params.unit_price ?? article.salePrice) * params.quantity,
-      total: (params.unit_price ?? article.salePrice) * params.quantity * 
+      subTotal: (params.unit_price) * params.quantity,
+      total: (params.unit_price) * params.quantity * 
              (1 - (params.discount_type === DISCOUNT_TYPES.AMOUNT ? 
-                  (params.discount || 0) / ((params.unit_price ?? article.salePrice) * params.quantity) : 
+                  (params.discount || 0) / ((params.unit_price) * params.quantity) : 
                   (params.discount || 0) / 100)
     )});
 
@@ -572,7 +571,7 @@ public async getArticleInfo(articleId: number, lang: string = 'fr') {
   try {
     return await this.articleRepository.findOne({
       where: { id: articleId },
-      select: ['id', 'title', 'salePrice'] // Sélectionnez les champs nécessaires
+      select: ['id', 'title'] // Sélectionnez les champs nécessaires
     });
   } catch (error) {
     return null;
@@ -947,7 +946,7 @@ private async handleQuotationStatus(
           throw new Error(t.articleNotFound.replace('{{id}}', item.articleId.toString()));
         }
   
-        const unitPrice = item.unit_price ?? article.salePrice;
+        const unitPrice = item.unit_price;
         const discountAmount = item.discount 
           ? (item.discount_type === DISCOUNT_TYPES.AMOUNT 
               ? item.discount 
@@ -1473,7 +1472,7 @@ private compareStatus(document: any, userValue: string | number, lang: string) {
   return {
     success: true,
     message: `${statusMessage}\n${comparisonMessage}`
-  };*/
+  };
 }
 
 }

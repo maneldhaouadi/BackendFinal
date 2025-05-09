@@ -5,13 +5,15 @@ import {
     Get,
     Header,
     Param,
+    ParseIntPipe,
     Post,
     Put,
     Query,
     Request,
+    Res,
     UseInterceptors,
   } from '@nestjs/common';
-  import { ApiTags, ApiParam } from '@nestjs/swagger';
+  import { ApiTags, ApiParam, ApiOperation, ApiResponse } from '@nestjs/swagger';
   import { ApiPaginatedResponse } from 'src/common/database/decorators/ApiPaginatedResponse';
   import { PageDto } from 'src/common/database/dtos/database.page.dto';
   import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
@@ -24,7 +26,12 @@ import { ExpenseCreateInvoiceDto } from '../dtos/expense-invoice-create.dto';
 import { ExpenseDuplicateInvoiceDto } from '../dtos/expense-invoice.duplicate.dto';
 import { ExpenseUpdateInvoiceDto } from '../dtos/expense-invoice.update.dto';
 import { ExpenseInvoiceService } from '../services/expense-invoice.service';
-  
+import { TemplateService } from 'src/modules/template/services/template.service';
+import { TemplateType } from 'src/modules/template/enums/TemplateType';
+import { Response } from 'express';
+ 
+
+
   @ApiTags('expenseinvoice')
   @Controller({
     version: '1',
@@ -32,8 +39,10 @@ import { ExpenseInvoiceService } from '../services/expense-invoice.service';
   })
   @UseInterceptors(LogInterceptor)
   export class ExpenseInvoiceController {
-    constructor(private readonly invoiceService: ExpenseInvoiceService) {}
-/*  
+    constructor(private readonly invoiceService: ExpenseInvoiceService,
+      private readonly templateService: TemplateService
+    ) {}
+
     @Get('/all')
     async findAll(@Query() options: IQueryObject): Promise<ExpenseResponseInvoiceDto[]> {
       return this.invoiceService.findAll(options);
@@ -143,8 +152,44 @@ import { ExpenseInvoiceService } from '../services/expense-invoice.service';
     ): Promise<ExpenseResponseInvoiceDto> {
       req.logInfo = { id };
       return this.invoiceService.updateInvoiceStatusIfExpired(id);
-    }*/
+    }
 
+    @Get(':id/export-pdf')
+@Header('Content-Type', 'application/pdf')
+async exportInvoicePdf(
+  @Res() res: Response,  // <-- Paramètre obligatoire en premier
+  @Param('id', ParseIntPipe) id: number,  // <-- Paramètre obligatoire
+  @Query('templateId') templateId?: number  // <-- Paramètre optionnel en dernier
+): Promise<void> {
+  try {
+    const pdfBuffer = await this.invoiceService.generateInvoicePdf(id, templateId);
+    
+    // Définir les headers manuellement
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=facture-${id}.pdf`);
+    
+    // Envoyer le buffer
+    res.send(pdfBuffer);
+  } catch (error) {
+    // Logger l'erreur
+    
+    // Retourner une réponse d'erreur appropriée
+    res.status(500).json({
+      statusCode: 500,
+      message: 'Échec de la génération du PDF',
+      error: error.message
+    });
   }
+}
+
+@Get('/unpaid')
+async findUnpaidByFirm(
+  @Query('firmId') firmId: number
+): Promise<ExpenseResponseInvoiceDto[]> {
+  return this.invoiceService.findUnpaidByFirm(firmId);
+}
+
+
+}
 
  

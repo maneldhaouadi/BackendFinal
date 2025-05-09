@@ -4,7 +4,7 @@ import { QueryBuilder } from 'src/common/database/utils/database-query-builder';
 import { FindOneOptions } from 'typeorm';
 import { Transactional } from '@nestjs-cls/transactional';
 import { createDineroAmountFromFloatWithDynamicCurrency } from 'src/utils/money.utils';
-import * as dinero from 'dinero.js';
+import dinero from 'dinero.js';
 import { ExpensePaymentInvoiceEntryRepository } from '../repositories/repository/expense-payment-invoice-entry.entity';
 import { ExpenseInvoiceService } from 'src/modules/expense-invoice/services/expense-invoice.service';
 import { ExpensePaymentInvoiceEntryEntity } from '../repositories/entities/expense-payment-invoice-entry.entity';
@@ -21,7 +21,7 @@ export class ExpensePaymentInvoiceEntryService {
     private readonly expensePaymentInvoiceEntryRepository: ExpensePaymentInvoiceEntryRepository,
     private readonly expenseInvoiceService: ExpenseInvoiceService,
   ) {}
-/*
+
   async findOneByCondition(query: IQueryObject): Promise<ExpensePaymentInvoiceEntryEntity | null> {
     const queryBuilder = new QueryBuilder();
     const queryOptions = queryBuilder.build(query);
@@ -336,5 +336,5 @@ private calculateNewStatus(
     for (const id of ids) {
       await this.softDelete(id);
     }
-  }*/
+  }
 }

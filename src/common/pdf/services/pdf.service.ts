@@ -4,6 +4,7 @@ import * as puppeteer from 'puppeteer';
 import * as cheerio from 'cheerio';
 import { join } from 'path';
 import { promises as fs } from 'fs';
+import { PDFOptions } from 'puppeteer';
 
 @Injectable()
 export class PdfService {
@@ -49,6 +50,43 @@ export class PdfService {
 
     return pdfBuffer;
   }
+
+  // pdf.service.ts
+
+  async generateFromHtml(
+    html: string,
+    options?: {
+      format?: PDFOptions['format'];
+      margin?: PDFOptions['margin'];
+      printBackground?: boolean;
+    }
+  ): Promise<Buffer> {
+    const browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      headless: true // Mode headless standard
+    });
+  
+    const page = await browser.newPage();
+  
+    // Options PDF avec typage correct
+    const pdfOptions: PDFOptions = {
+      format: options?.format || 'A4',
+      margin: options?.margin || {
+        top: '20mm',
+        right: '10mm',
+        bottom: '20mm',
+        left: '10mm'
+      },
+      printBackground: options?.printBackground !== false
+    };
+  
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    const pdfBuffer = await page.pdf(pdfOptions);
+  
+    await browser.close();
+    return pdfBuffer;
+  }
+
 
   async getStylesheets(html: string): Promise<string[]> {
     const $ = cheerio.load(html);

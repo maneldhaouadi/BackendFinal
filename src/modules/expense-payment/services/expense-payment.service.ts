@@ -18,10 +18,19 @@ import { UpdateExpensePaymentDto } from '../dtos/expense-payment.update.dto';
 import { ExpenseCreatePaymentDto } from '../dtos/expense-payment.create.dto';
 import { StorageService } from 'src/common/storage/services/storage.service';
 import { createDineroAmountFromFloatWithDynamicCurrency } from 'src/utils/money.utils';
-import * as dinero from 'dinero.js';
 import { EXPENSE_INVOICE_STATUS } from 'src/modules/expense-invoice/enums/expense-invoice-status.enum';
 import { ResponseExpensePaymentInvoiceEntryDto } from '../dtos/expense-payment-invoice-entry.response.dto';
 import { CurrencyEntity } from 'src/modules/currency/repositories/entities/currency.entity';
+
+import dinero from 'dinero.js';
+import { TemplateType } from 'src/modules/template/enums/TemplateType';
+import { TemplateService } from 'src/modules/template/services/template.service';
+import { PdfService } from 'src/common/pdf/services/pdf.service';
+import ejs from "ejs";
+import { format } from 'date-fns/format';
+import { PAYMENT_MODE } from 'src/modules/payment/enums/payment-mode.enum';
+
+
 @Injectable()
 export class ExpensePaymentService {
   constructor(
@@ -31,9 +40,11 @@ export class ExpensePaymentService {
     private readonly expenseInvoiceService: ExpenseInvoiceService,
     private readonly currencyService: CurrencyService,
     private readonly storageService: StorageService,
+    private readonly templateService:TemplateService,
+    private readonly pdfService:PdfService
     
   ) {}
-/*
+
   async findOneById(id: number): Promise<ExpensePaymentEntity> {
     const expensePayment = await this.expenesePaymentRepository.findOneById(id);
     if (!expensePayment) {
@@ -90,10 +101,8 @@ export class ExpensePaymentService {
     try {
       console.log('Saving payment...', createPaymentDto);
   
-      const sequentialNumbr = createPaymentDto.sequentialNumbr || await this.generateSequentialNumber();
-      if (!/^PAY-\d+$/.test(sequentialNumbr)) {
-        throw new Error('Invalid payment number format. Expected format: PAY-XXXX');
-      }
+      const sequentialNumbr = await this.generateSequentialNumber();
+
   
       let uploadPdfField = null;
       if (createPaymentDto.pdfFileId) {
@@ -260,22 +269,21 @@ export class ExpensePaymentService {
 // Méthode pour générer un numéro séquentiel
 private async generateSequentialNumber(): Promise<string> {
   const lastPayment = await this.expenesePaymentRepository.findOne({
-    where: {}, // Condition vide pour récupérer la dernière entité
-    order: { id: 'DESC' },
+      where: {},
+      order: { createdAt: 'DESC' }, // Utilisez createdAt pour plus de fiabilité
   });
 
   if (!lastPayment || !lastPayment.sequentialNumbr) {
-    // Si la table est vide ou si sequentialNumbr est null/undefined, commencez à partir de 1
-    return 'PAY-1';
+      return 'PAY-1';
   }
 
-  // Extraire le numéro de sequentialNumbr (par exemple, "PAY-123" -> 123)
-  const lastNumber = parseInt(lastPayment.sequentialNumbr.split('-')[1], 10);
-  if (isNaN(lastNumber)) {
-    // Si le format de sequentialNumbr est invalide, commencez à partir de 1
-    return 'PAY-1';
+  // Utilisation d'une regex plus robuste
+  const matches = lastPayment.sequentialNumbr.match(/^PAY-(\d+)$/);
+  if (!matches) {
+      return 'PAY-1';
   }
 
+  const lastNumber = parseInt(matches[1], 10);
   return `PAY-${lastNumber + 1}`;
 }
 
@@ -318,11 +326,7 @@ async update(
       throw new NotFoundException(`Payment with ID ${id} not found`);
     }
 
-    // 2. Valider le numéro séquentiel
-    const sequentialNumbr = updatePaymentDto.sequentialNumbr || existingPayment.sequentialNumbr;
-    if (!/^PAY-\d+$/.test(sequentialNumbr)) {
-      throw new BadRequestException('Invalid payment number format. Expected format: PAY-XXXX');
-    }
+   
 
     // 3. Gérer le fichier PDF si nécessaire
     
@@ -331,8 +335,8 @@ async update(
     const paymentData = {
       ...existingPayment,
       ...updatePaymentDto,
-      sequential: sequentialNumbr,
-      sequentialNumbr,
+        sequential: existingPayment.sequential,
+        sequentialNumbr: existingPayment.sequentialNumbr,
     };
 
     // 5. Traiter les entrées de facture si elles sont fournies
@@ -655,5 +659,83 @@ async softDeleteMany(ids: number[]): Promise<void> {
 
   async getTotal(): Promise<number> {
     return this.expenesePaymentRepository.getTotalCount();
-  }*/
+  }
+
+  async generatePaymentPdf(paymentId: number, templateId?: number): Promise<Buffer> {
+    // 1. Récupérer le paiement avec toutes les relations nécessaires
+    const payment = await this.expenesePaymentRepository.findOne({
+        where: { id: paymentId },
+        relations: [
+            'invoices',
+            'invoices.expenseInvoice',
+            'invoices.expenseInvoice.firm',
+            'invoices.expenseInvoice.interlocutor',
+            'invoices.expenseInvoice.currency',
+            'currency',
+            'uploads',
+            'uploadPdfField'
+        ]
+    });
+
+    if (!payment) {
+        throw new NotFoundException(`Paiement avec ID ${paymentId} non trouvé`);
+    }
+
+    // 2. Récupérer le template
+    const template = templateId 
+        ? await this.templateService.getTemplateById(templateId)
+        : await this.templateService.getDefaultTemplate(TemplateType.PAYMENT);
+    
+    if (!template) {
+        throw new NotFoundException('Aucun template de paiement trouvé');
+    }
+
+    // 3. Préparer les données pour le template
+    // 3. Préparer les données pour le template
+const templateData = {
+  payment: {
+      ...payment,
+      paymentMethod: PAYMENT_MODE[payment.mode] || payment.mode,
+      // Formatage des dates
+      date: format(payment.date, 'dd/MM/yyyy'),
+      createdAt: format(payment.createdAt, 'dd/MM/yyyy'),
+      
+      // Invoices avec formatage spécifique et calcul du montant restant
+      invoices: payment.invoices?.map(entry => ({
+          invoiceNumber: entry.expenseInvoice?.sequential,
+          invoiceDate: entry.expenseInvoice?.date ? format(entry.expenseInvoice.date, 'dd/MM/yyyy') : 'N/A',
+          dueDate: entry.expenseInvoice?.dueDate ? format(entry.expenseInvoice.dueDate, 'dd/MM/yyyy') : 'N/A',
+          amount: entry.amount,
+          originalAmount: entry.originalAmount,
+          currency: entry.expenseInvoice?.currency?.code || 'N/A',
+          exchangeRate: entry.exchangeRate,
+          firm: entry.expenseInvoice?.firm?.name || 'N/A',
+          total: entry.expenseInvoice?.total || 0,
+          remainingAmount: (entry.expenseInvoice?.total || 0) - (entry.amount || 0)
+      })) || [],
+      
+      // Gestion des valeurs nulles
+      currency: payment.currency || {
+          code: 'EUR',
+          symbol: '€'
+      }
+  }
+};
+
+    // 4. Nettoyer et compiler le template
+    const cleanedContent = template.content
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&');
+
+    const compiledHtml = ejs.render(cleanedContent, templateData);
+
+    // 5. Générer le PDF
+    return this.pdfService.generateFromHtml(compiledHtml, {
+        format: 'A4',
+        margin: { top: '20mm', right: '10mm', bottom: '20mm', left: '10mm' },
+        printBackground: true
+    });
+}
 }

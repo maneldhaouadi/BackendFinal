@@ -19,7 +19,7 @@ export class UpdateArticleDto {
     @Matches(/^[A-Za-z0-9\-_]+$/, { 
       message: 'Reference can only contain letters, numbers, hyphens and underscores' 
     })
-    reference: string;
+    reference?: string;
 
   @ApiProperty({ required: false, example: 30 })
   @IsNumber()

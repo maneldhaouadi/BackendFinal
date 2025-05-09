@@ -78,10 +78,7 @@ export class ExpenseCreatePaymentDto {
   })
   pdfFileId?: number;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(25)
-  sequentialNumbr?: string;
+ 
 
 
 }

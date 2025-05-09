@@ -22,6 +22,7 @@ import { ExpenseQuotationModule } from '../expense_quotation/expensquotation.mod
 import { ExpensePaymentInvoiceEntryEntity } from '../expense-payment/repositories/entities/expense-payment-invoice-entry.entity';
 import { ExpensePaymentModule } from '../expense-payment/expense-payment.module';
 import { ExpensePaymentInvoiceEntryService } from '../expense-payment/services/expense-payment-invoice-entry.service';
+import { TemplateModule } from '../template/template.module';
 
 @Module({
   controllers: [],
@@ -51,6 +52,7 @@ import { ExpensePaymentInvoiceEntryService } from '../expense-payment/services/e
     CalculationsModule,
     StorageModule,
     ExpenseQuotationModule,
+    TemplateModule
   ],
 })
 export class ExpenseInvoiceModule {}

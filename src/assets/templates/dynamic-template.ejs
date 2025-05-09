@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title><%= meta.type || 'Document' %></title>
+  <title><%= (invoice && invoice.meta && invoice.meta.type) || 'Document' %></title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
     .dynamic-field { background-color: #f5f5f5; padding: 2px 5px; border-radius: 3px; }
@@ -12,10 +12,35 @@
   <% if (templateContent) { %>
     <%- templateContent %>
   <% } else { %>
-    <!-- Contenu par défaut si aucun template n'est fourni -->
-    <h1><%= meta.type %> N°<%= quotation.sequential %></h1>
-    <p>Date: <%= quotation.date %></p>
-    <p>Client: <%= quotation.firm.name %></p>
-  <% } %>
-</body>
-</html>
+    <!-- Contenu par défaut avec vérifications de sécurité -->
+    <h1><%= (invoice && invoice.meta && invoice.meta.type) || 'FACTURE' %> N°<%= (invoice && invoice.sequential) || '' %></h1>
+    <p>Date: <%= (invoice && invoice.date) || new Date().toLocaleDateString() %></p>
+    <p>Client: <%= (firm && firm.name) || 'Non spécifié' %></p>
+    
+    <!-- Tableau des articles -->
+    <% if (articles && articles.length) { %>
+      <table>
+        <thead>
+          <tr>
+            <th>Description</th>
+            <th>Quantité</th>
+            <th>Prix unitaire</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% articles.forEach(function(article) { %>
+            <tr>
+              <td><%= article.description || '' %></td>
+              <td><%= article.quantity || 0 %></td>
+              <td><%= article.price || 0 %> <%= (totals && totals.currency) || '' %></td>
+              <td><%= article.total || 0 %> <%= (totals && totals.currency) || '' %></td>
+            </tr>
+          <% }); %>
+        </tbody>
+      </table>
+    <% } %>
+    
+    <!-- Totaux -->
+    <% if (totals) { %>
+      <div

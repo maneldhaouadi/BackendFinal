@@ -50,14 +50,28 @@ export class ArticleExpensQuotationEntryService {
                     }),
                 )
                 : [];
-
+    
             // Vérification et création de l'article si nécessaire
-            const article =
-                (await this.articleService.findOneByCondition({
-                    filter: `title||$eq||${createArticleExpensQuotationEntryDto.article.title}`,
-                })) ||
-                (await this.articleService.save(createArticleExpensQuotationEntryDto.article));
-
+            let article = await this.articleService.findOneByCondition({
+                filter: `title||$eq||${createArticleExpensQuotationEntryDto.article.title}`,
+            });
+    
+            if (!article) {
+                article = await this.articleService.save(createArticleExpensQuotationEntryDto.article);
+            } else {
+                // Décrémenter la quantité seulement si c'est un article existant
+                const newQuantity = article.quantityInStock - createArticleExpensQuotationEntryDto.quantity;
+                if (newQuantity < 0) {
+                    throw new Error('Quantité insuffisante en stock');
+                }
+                
+                // Mettre à jour la quantité de l'article
+                article.quantityInStock = newQuantity;
+                await this.articleService.update(article.id, {
+                    quantityInStock: newQuantity,
+                });
+            }
+    
             const lineItem = {
                 quantity: createArticleExpensQuotationEntryDto.quantity,
                 unit_price: createArticleExpensQuotationEntryDto.unit_price,
@@ -65,7 +79,7 @@ export class ArticleExpensQuotationEntryService {
                 discount_type: createArticleExpensQuotationEntryDto.discount_type,
                 taxes: taxes,
             };
-
+    
             // Sauvegarde de l'entrée de devis
             const entry = await this.expensQuotationEntryRepository.save({
                 ...createArticleExpensQuotationEntryDto,
@@ -74,7 +88,7 @@ export class ArticleExpensQuotationEntryService {
                 subTotal: this.calculationsService.calculateSubTotalForLineItem(lineItem),
                 total: this.calculationsService.calculateTotalForLineItem(lineItem),
             });
-
+    
             // Sauvegarde des taxes associées
             await this.expensQuotationEntryTaxService.saveMany(
                 taxes.map((tax) => {
@@ -89,7 +103,6 @@ export class ArticleExpensQuotationEntryService {
             throw new Error(`Error saving article expens quotation entry: ${error.message}`);
         }
     }
-
     async findManyAsLineItem(ids: number[]): Promise<LineItem[]> {
         const lineItems = await Promise.all(
             ids.map((id) => this.findOneAsLineItem(id)),

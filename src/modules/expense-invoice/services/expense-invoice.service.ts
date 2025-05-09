@@ -30,6 +30,9 @@ import { ExpensQuotationEntity } from "src/modules/expense_quotation/repositorie
 import { StorageService } from "src/common/storage/services/storage.service";
 import { ExpenseResponseInvoiceUploadDto } from "../dtos/expense-invoice-upload.response.dto";
 import { ExpensQuotationService } from "src/modules/expense_quotation/services/expensquotation.service";
+import { TemplateService } from "src/modules/template/services/template.service";
+import { TemplateType } from "src/modules/template/enums/TemplateType";
+import ejs from "ejs";
 
 @Injectable()
 export class ExpenseInvoiceService {
@@ -51,9 +54,10 @@ export class ExpenseInvoiceService {
     //abstract services
     private readonly calculationsService: InvoicingCalculationsService,
     private readonly pdfService: PdfService,
-    private readonly expenseQuotationService:ExpensQuotationService
+    private readonly expenseQuotationService:ExpensQuotationService,
+    private readonly templateService:TemplateService
   ) {}
- /*
+ 
   async findOneById(id: number): Promise<ExpenseInvoiceEntity> {
     const invoice = await this.invoiceRepository.findOneById(id);
     if (!invoice) {
@@ -599,7 +603,153 @@ if (updateInvoiceDto.uploads) {
     }
   
     return invoice;
-  }*/
+  }
+
+
+  async getInvoiceForExport(id: number) {
+    return this.invoiceRepository.findOne({
+      where: { id },
+      relations: [
+        'firm',
+        'interlocutor',
+        'articleExpenseEntries',
+        'articleExpenseEntries.article',
+        'currency'
+      ]
+    });
+ 
+  }
+  async generateInvoicePdf(invoiceId: number, templateId?: number): Promise<Buffer> {
+    // 1. Récupérer la facture avec toutes les relations nécessaires
+    const invoice = await this.invoiceRepository.findOne({
+        where: { id: invoiceId },
+        relations: [
+            'firm', 
+            'interlocutor', 
+            'articleExpenseEntries', 
+            'articleExpenseEntries.article',
+            'articleExpenseEntries.expenseArticleInvoiceEntryTaxes',
+            'articleExpenseEntries.expenseArticleInvoiceEntryTaxes.tax',
+            'currency',
+            'expenseInvoiceMetaData',
+            'taxStamp',
+            'taxWithholding',
+            'cabinet',
+            'cabinet.address',
+            'bankAccount'
+        ]
+    });
+
+    if (!invoice) {
+        throw new NotFoundException(`Facture avec ID ${invoiceId} non trouvée`);
+    }
+
+    // 2. Récupérer le template
+    const template = templateId 
+        ? await this.templateService.getTemplateById(templateId)
+        : await this.templateService.getDefaultTemplate(TemplateType.INVOICE);
+    
+    if (!template) {
+        throw new NotFoundException('Aucun template de facture trouvé');
+    }
+
+    // 3. Calculer les totaux
+    const totalTVA = this.calculationsService.calculateTotalTax(invoice);
+    const totalFODEC = this.calculationsService.calculateFodec(invoice);
+
+    // 4. Préparer les données pour le template
+    const templateData = {
+        invoice: {
+            ...invoice,
+            // Formatage des dates
+            date: format(invoice.date, 'dd/MM/yyyy'),
+            dueDate: invoice.dueDate ? format(invoice.dueDate, 'dd/MM/yyyy') : 'Non spécifié',
+            
+            // Articles avec formatage spécifique
+            articles: invoice.articleExpenseEntries?.map(entry => ({
+              reference: entry.article?.reference,
+                title: entry.article?.title,
+                description: entry.article?.description || '',
+                quantity: entry.quantity,
+                unit_price: entry.unit_price,
+                discount: entry.discount,
+                discount_type: entry.discount_type,
+                subTotal: entry.subTotal,
+                total: entry.total,
+                taxes: entry.expenseArticleInvoiceEntryTaxes?.map(taxEntry => ({
+                    label: taxEntry.tax?.label,
+                    rate: taxEntry.tax?.value,
+                    amount: taxEntry.tax?.value * entry.subTotal / 100
+                })) || []
+            })) || [],
+            
+            // Totaux calculés
+            totalHT: invoice.subTotal,
+            totalTVA,
+            totalFODEC,
+            total: invoice.total,
+            
+            // Gestion des valeurs nulles
+            firm: {
+                ...invoice.firm,
+                deliveryAddress: invoice.firm.deliveryAddress || {
+                    address: '',
+                    zipcode: '',
+                    region: '',
+                    country: ''
+                },
+                invoicingAddress: invoice.firm.invoicingAddress || invoice.firm.deliveryAddress || {
+                    address: '',
+                    zipcode: '',
+                    region: '',
+                    country: ''
+                }
+            },
+            cabinet: invoice.cabinet || {
+                enterpriseName: '',
+                taxIdentificationNumber: '',
+                address: {
+                    address: '',
+                    zipcode: '',
+                    region: '',
+                    country: ''
+                },
+                phone: ''
+            },
+            currency: invoice.currency || {
+                symbol: '€'
+            }
+        }
+    };
+
+    // 5. Nettoyer et compiler le template
+    const cleanedContent = template.content
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&');
+
+    const compiledHtml = ejs.render(cleanedContent, templateData);
+
+    // 6. Générer le PDF
+    return this.pdfService.generateFromHtml(compiledHtml, {
+        format: 'A4',
+        margin: { top: '20mm', right: '10mm', bottom: '20mm', left: '10mm' },
+        printBackground: true
+    });
+}
+
+async findUnpaidByFirm(firmId: number): Promise<ExpenseInvoiceEntity[]> {
+  return this.invoiceRepository.findAll({
+    where: {
+      firmId,
+      status: EXPENSE_INVOICE_STATUS.Unpaid,
+      // Ajoutez ici d'autres conditions si nécessaire
+    },
+    relations: ['currency', 'firm'] // Ajoutez les relations nécessaires
+  });
+}
+
 }
 
 

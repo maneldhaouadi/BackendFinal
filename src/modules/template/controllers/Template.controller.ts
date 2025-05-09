@@ -1,16 +1,24 @@
-import { Controller, Get, Query, ParseEnumPipe, NotFoundException, Body, Post, Param, ParseIntPipe, Put, Delete, Res } from '@nestjs/common';
+import { Controller, Get, Query, ParseEnumPipe, NotFoundException, Body, Post, Param, ParseIntPipe, Put, Delete, Res, BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { TemplateService } from '../services/template.service';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiProduces } from '@nestjs/swagger';
 import { Template } from '../repositories/entities/template.entity';
 import { TemplateType } from '../enums/TemplateType';
 import { CreateTemplateDto } from '../dtos/create-template.dto';
 import { UpdateTemplateDto } from '../dtos/update-template.dto';
 import { Response } from 'express'; // Instead of generic Response
+import { ExpenseInvoiceService } from 'src/modules/expense-invoice/services/expense-invoice.service';
+import { ExpensQuotationService } from 'src/modules/expense_quotation/services/expensquotation.service';
+import { PaymentService } from 'src/modules/payment/services/payment.service';
+import { ExpensePaymentService } from 'src/modules/expense-payment/services/expense-payment.service';
 
 @ApiTags('Templates')
 @Controller('templates')
 export class TemplateController {
-  constructor(private readonly templateService: TemplateService) {}
+  constructor(private readonly templateService: TemplateService,
+    private readonly invoiceService:ExpenseInvoiceService,
+    private readonly quotationService:ExpensQuotationService,
+    private readonly paymentService:ExpensePaymentService
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Récupérer tous les templates actifs' })
@@ -53,17 +61,28 @@ export class TemplateController {
     return template;
   }
   @Post()
-  @ApiOperation({ summary: 'Créer un nouveau template' })
-  @ApiResponse({ 
+@ApiOperation({ summary: 'Créer un nouveau template' })
+@ApiResponse({ 
     status: 201, 
     description: 'Template créé avec succès',
     type: Template 
-  })
-  async createTemplate(
+})
+@ApiResponse({ 
+    status: 400, 
+    description: 'Un template avec ce nom existe déjà' 
+})
+async createTemplate(
     @Body() createTemplateDto: CreateTemplateDto
-  ): Promise<Template> {
-    return this.templateService.createTemplate(createTemplateDto);
-  }
+): Promise<Template> {
+    try {
+        return await this.templateService.createTemplate(createTemplateDto);
+    } catch (error) {
+        if (error.message === 'Un template avec ce nom existe déjà') {
+            throw new BadRequestException(error.message);
+        }
+        throw error;
+    }
+}
 
   @Put(':id')
 @ApiOperation({ summary: 'Mettre à jour un template' })
@@ -112,45 +131,68 @@ async deleteTemplate(
     return this.templateService.getTemplateById(id);
   }
 
-  @Post(':id/export/:format')
-  async exportTemplate(
+  @Get('invoices/:id/export-pdf')
+@ApiOperation({ summary: 'Exporter une facture en PDF' })
+@ApiProduces('application/pdf')
+async exportInvoicePdf(
     @Param('id', ParseIntPipe) id: number,
-    @Param('format') format: 'pdf' | 'png' | 'docx' | 'jpeg',
-    @Body() body: any,
+    @Query('templateId') templateId: number,
+    @Res() res: Response
+) {
+    const pdfBuffer = await this.invoiceService.generateInvoicePdf(id, templateId);
+    
+    res.set({
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename=facture-${id}.pdf`,
+        'Content-Length': pdfBuffer.length
+    });
+    
+    res.send(pdfBuffer);
+}
+
+@Get('quotations/:id/export-pdf')
+  @ApiOperation({ summary: 'Exporter un devis en PDF' })
+  @ApiProduces('application/pdf')
+  async exportQuotationPdf(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('templateId') templateId: number,
     @Res() res: Response
   ) {
-    try {
-      const buffer = await this.templateService.exportTemplate(id, format, body);
-      
-      if (!buffer || buffer.length === 0) {
-        throw new Error('Le contenu généré est vide');
-      }
-  
-      res.set({
-        'Content-Type': this.getMimeType(format),
-        'Content-Disposition': `attachment; filename=template_${id}_${Date.now()}.${format}`,
-        'Content-Length': buffer.length
-      });
-      
-      res.end(buffer);
-      
-    } catch (error) {
-      res.status(500).json({
-        statusCode: 500,
-        message: error.message,
-        error: 'Internal Server Error'
-      });
-    }
+    const pdfBuffer = await this.quotationService.generateQuotationPdf(id, templateId);
+    
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename=devis-${id}.pdf`,
+      'Content-Length': pdfBuffer.length
+    });
+    
+    res.send(pdfBuffer);
   }
 
-private getMimeType(format: string): string {
-  const mimeTypes = {
-    pdf: 'application/pdf',
-    png: 'image/png',
-    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    jpeg: 'image/jpeg'
-  };
-  return mimeTypes[format] || 'application/octet-stream';
+  @Get('payments/:id/export-pdf')
+@ApiOperation({ summary: 'Exporter un paiement en PDF' })
+@ApiProduces('application/pdf')
+async exportPaymentPdf(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('templateId') templateId: number,
+    @Res() res: Response
+) {
+    try {
+        const pdfBuffer = await this.paymentService.generatePaymentPdf(id, templateId);
+        
+        res.set({
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename=paiement-${id}.pdf`,
+            'Content-Length': pdfBuffer.length
+        });
+        
+        res.send(pdfBuffer);
+    } catch (error) {
+        if (error instanceof NotFoundException) {
+            throw new NotFoundException(`Paiement avec ID ${id} non trouvé`);
+        }
+        throw new InternalServerErrorException('Échec de la génération du PDF de paiement');
+    }
 }
 
 }

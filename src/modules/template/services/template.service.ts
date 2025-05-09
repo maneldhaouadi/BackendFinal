@@ -5,6 +5,7 @@ import { TemplateType } from '../enums/TemplateType';
 import { CreateTemplateDto } from '../dtos/create-template.dto';
 import { UpdateTemplateDto } from '../dtos/update-template.dto';
 import { PdfService } from 'src/common/pdf/services/pdf.service';
+import ejs from 'ejs';
 
 @Injectable()
 export class TemplateService {
@@ -26,6 +27,14 @@ export class TemplateService {
 
   async createTemplate(createTemplateDto: CreateTemplateDto): Promise<Template> {
     // Si le nouveau template est marqué comme default, on reset les autres
+    const existingTemplate = await this.templateRepository.findOne({
+      where: { name: createTemplateDto.name }
+  });
+  
+  if (existingTemplate) {
+      throw new Error('Un template avec ce nom existe déjà');
+  }
+   
     if (createTemplateDto.isDefault) {
       await this.resetDefaultTemplate(createTemplateDto.type);
     }
@@ -46,33 +55,44 @@ export class TemplateService {
 }
 
 async updateTemplate(id: number, updateTemplateDto: UpdateTemplateDto): Promise<Template> {
-    // 1. Récupération du template existant
-    const template = await this.templateRepository.findOne({
-        where: { id }
-    });
-    
-    if (!template || template.deletedAt) {
-        throw new NotFoundException(`Template with ID ${id} not found`);
-    }
+  // 1. Récupération du template existant
+  const template = await this.templateRepository.findOne({
+      where: { id }
+  });
+  
+  if (!template || template.deletedAt) {
+      throw new NotFoundException(`Template with ID ${id} not found`);
+  }
 
-    // 2. Gestion du changement de template par défaut
-    if (updateTemplateDto.isDefault !== undefined && 
-        updateTemplateDto.isDefault !== template.isDefault) {
-        if (updateTemplateDto.isDefault) {
-            await this.resetDefaultTemplate(template.type);
-        }
-    }
+  // Vérifier si le nouveau nom est déjà utilisé par un autre template
+  if (updateTemplateDto.name && updateTemplateDto.name !== template.name) {
+      const existingTemplate = await this.templateRepository.findOne({
+          where: { name: updateTemplateDto.name }
+      });
+      
+      if (existingTemplate) {
+          throw new Error('Un template avec ce nom existe déjà');
+      }
+  }
 
-    // 3. Mise à jour manuelle des champs
-    const updatedTemplate = {
-        ...template,
-        ...updateTemplateDto,
-        // Ne pas permettre la modification du type s'il est fourni
-        type: template.type // Conserve le type original
-    };
+  // 2. Gestion du changement de template par défaut
+  if (updateTemplateDto.isDefault !== undefined && 
+      updateTemplateDto.isDefault !== template.isDefault) {
+      if (updateTemplateDto.isDefault) {
+          await this.resetDefaultTemplate(template.type);
+      }
+  }
 
-    // 4. Sauvegarde
-    return this.templateRepository.save(updatedTemplate);
+  // 3. Mise à jour manuelle des champs
+  const updatedTemplate = {
+      ...template,
+      ...updateTemplateDto,
+      // Ne pas permettre la modification du type s'il est fourni
+      type: template.type // Conserve le type original
+  };
+
+  // 4. Sauvegarde
+  return this.templateRepository.save(updatedTemplate);
 }
 
 async deleteTemplate(id: number): Promise<void> {
@@ -126,60 +146,5 @@ async getTemplateById(id: number): Promise<Template> {
   }
  
 
-  async exportTemplate(id: number, format: 'pdf' | 'png' | 'docx' | 'jpeg', data: any = {}): Promise<Buffer> {
-    const template = await this.getTemplateById(id);
-    
-    try {
-      // Normaliser les données
-      const normalizedData = this.normalizeTemplateData(data);
-      
-      // Convertir le template en contenu EJS valide
-      const processedTemplate = this.convertTemplateSyntax(template.content);
-      
-      // Générer le PDF
-      return await this.pdfService.generatePdf(
-        {
-          ...normalizedData,
-          templateContent: processedTemplate // Ajoutez le contenu du template aux données
-        },
-        'dynamic-template' // Nom du template par défaut
-      );
-  
-    } catch (error) {
-      throw new Error(`Échec de la génération PDF: ${error.message}`);
-    }
-}
 
-private normalizeTemplateData(rawData: any): any {
-  return {
-    meta: {
-      type: rawData.type || 'FACTURE',
-      ...rawData.meta
-    },
-    quotation: {
-      sequential: rawData.number || rawData.sequential || '',
-      date: rawData.date || new Date().toISOString().split('T')[0],
-      object: rawData.object || '',
-      firm: {
-        name: rawData.firm?.name || '',
-        ...rawData.firm
-      },
-      ...rawData.quotation
-    },
-    ...rawData
-  };
-}
-
-private convertTemplateSyntax(templateContent: string): string {
-  // Convertir {{variable}} en <%= variable %>
-  let converted = templateContent.replace(/\{\{([^}]+)\}\}/g, '<%= $1 %>');
-  
-  // Convertir les spans avec data-dynamic en variables EJS
-  converted = converted.replace(/<span[^>]*data-dynamic="([^"]+)"[^>]*>(.*?)<\/span>/g, 
-    (match, dynamicKey, content) => {
-      return `<%= ${dynamicKey} %>`;
-    });
-  
-  return converted;
-}
 }

@@ -114,38 +114,72 @@ export class ArticleService {
     throw error;
   }
 
+  private async generateUniqueReference(): Promise<string> {
+    let reference: string;
+    let attempts = 0;
+    const maxAttempts = 5;
+  
+    do {
+      // Génération selon le format souhaité
+      const randomNumber = Math.floor(100000000 + Math.random() * 900000000);
+      reference = `REF-${randomNumber}`;
+      attempts++;
+  
+      // Vérification de l'unicité
+      const exists = await this.articleRepository.findOne({ 
+        where: { reference } 
+      });
+      
+      if (!exists) return reference;
+  
+      // Limite de tentatives pour éviter les boucles infinies
+      if (attempts >= maxAttempts) {
+        throw new Error('Impossible de générer une référence unique après plusieurs tentatives');
+      }
+      
+      // Pause avant nouvelle tentative
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } while (true);
+  }
+  
   async save(
     createArticleDto: CreateArticleDto & { justificatifFile?: Express.Multer.File }
-): Promise<ArticleEntity> {
+  ): Promise<ArticleEntity> {
+    // Générer une référence unique si vide
+    if (!createArticleDto.reference?.trim()) {
+      createArticleDto.reference = await this.generateUniqueReference();
+    }
+  
     const articleData: DeepPartial<ArticleEntity> = {
-        title: createArticleDto.title,
-        description: createArticleDto.description,
-        reference: createArticleDto.reference,
-        quantityInStock: createArticleDto.quantityInStock,
-        unitPrice: createArticleDto.unitPrice,
-        status: createArticleDto.status as ArticleStatus || 'draft',
-        notes: createArticleDto.notes,
+      title: createArticleDto.title,
+      description: createArticleDto.description,
+      reference: createArticleDto.reference,
+      quantityInStock: createArticleDto.quantityInStock,
+      unitPrice: createArticleDto.unitPrice,
+      status: (createArticleDto.status as ArticleStatus) || 'draft',
+      notes: createArticleDto.notes,
     };
-
+  
+    // Gestion du fichier justificatif
     if (createArticleDto.justificatifFile) {
-        articleData.justificatifFile = {
-            buffer: createArticleDto.justificatifFile.buffer,
-            originalname: createArticleDto.justificatifFile.originalname,
-            mimetype: createArticleDto.justificatifFile.mimetype,
-            size: createArticleDto.justificatifFile.size
-        };
-        articleData.justificatifFileName = createArticleDto.justificatifFile.originalname;
-        articleData.justificatifMimeType = createArticleDto.justificatifFile.mimetype;
-        articleData.justificatifFileSize = createArticleDto.justificatifFile.size;
+      articleData.justificatifFile = {
+        buffer: createArticleDto.justificatifFile.buffer,
+        originalname: createArticleDto.justificatifFile.originalname,
+        mimetype: createArticleDto.justificatifFile.mimetype,
+        size: createArticleDto.justificatifFile.size
+      };
+      articleData.justificatifFileName = createArticleDto.justificatifFile.originalname;
+      articleData.justificatifMimeType = createArticleDto.justificatifFile.mimetype;
+      articleData.justificatifFileSize = createArticleDto.justificatifFile.size;
     }
-
+  
     try {
-        const article = this.articleRepository.create(articleData);
-        return await this.articleRepository.save(article);
+      const article = this.articleRepository.create(articleData);
+      return await this.articleRepository.save(article);
     } catch (error) {
-        this.handleSaveError(error, createArticleDto.reference);
+      this.handleSaveError(error, createArticleDto.reference);
     }
-}
+  }
 
   async saveMany(
     createArticleDtos: (CreateArticleDto & { justificatifFile?: Express.Multer.File })[]
@@ -1146,7 +1180,11 @@ async getStockHealth(): Promise<{
  */
 
   
-
+  private generateCustomReference(): string {
+    // Format: REF-520333753 (REF- + 9 chiffres aléatoires)
+    const randomNumber = Math.floor(100000000 + Math.random() * 900000000); // Génère un nombre à 9 chiffres
+    return `REF-${randomNumber}`;
+  }
 
   async getTotal(): Promise<number> {
     return this.articleRepository.getTotalCount();

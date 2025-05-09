@@ -49,4 +49,10 @@ discount_type: DISCOUNT_TYPES;
   )
   articleExpensQuotationEntryTaxes: ArticleExpensQuotationEntryTaxEntity[];
   
+  @Column({ name: 'ordered_quantity', type: 'float', nullable: true })
+  orderedQuantity: number; // Nouveau champ pour la quantité commandée
+
+  @Column({ name: 'original_stock', type: 'float', nullable: true })
+  originalStock: number; // Stock original au moment de la commande
+
 }

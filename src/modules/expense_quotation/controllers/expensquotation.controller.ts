@@ -1,15 +1,18 @@
 /* eslint-disable prettier/prettier */
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   Header,
   Param,
+  ParseIntPipe,
   Post,
   Put,
   Query,
-  Req, // ✅ Correction ici (au lieu de `Request`)
+  Req,
+  Res, // ✅ Correction ici (au lieu de `Request`)
 } from '@nestjs/common';
 import { Request } from 'express'; // ✅ Correction de l'import Express
 
@@ -29,6 +32,7 @@ import { EVENT_TYPE } from 'src/app/enums/logger/event-types.enum';
 import { UpdateExpensQuotationDto } from '../dtos/expensquotation.update.dto';
 import { DuplicateExpensQuotationDto } from '../dtos/expensquotation.duplicate.dto';
 import { ExpensQuotationEntity } from '../repositories/entities/expensquotation.entity';
+import { Response } from 'express';
 
 
 @ApiTags('expensquotation')
@@ -39,7 +43,7 @@ import { ExpensQuotationEntity } from '../repositories/entities/expensquotation.
 export class ExpensQuotationController {
   constructor(
     private readonly expensQuotationService: ExpensQuotationService,
-  ) {}/*
+  ) {}
 
   @Get('/all')
 async findAll(
@@ -161,6 +165,45 @@ async deletePdfFile(@Param('id') id: number): Promise<void> {
     return this.expensQuotationService.updateQuotationStatusIfExpired(quotationId); // Appelez la méthode du service
   }
 
-*/
+  @Get('/check-sequential-number')
+async checkSequentialNumberExists(
+  @Query('sequentialNumber') sequentialNumber: string
+): Promise<{ exists: boolean }> {
+  if (!sequentialNumber) {
+    throw new BadRequestException('Sequential number is required');
+  }
+  
+  const exists = await this.expensQuotationService.checkSequentialNumberExists(sequentialNumber);
+  return { exists };
+}
+@Get(':id/export-pdf')
+@Header('Content-Type', 'application/pdf')
+async exportQuotationPdf(
+    @Res() res: Response,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('templateId') templateId?: number
+): Promise<void> {
+    try {
+        const pdfBuffer = await this.expensQuotationService.generateQuotationPdf(id, templateId);
+        
+        // Définir les headers manuellement
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=devis-${id}.pdf`);
+        
+        // Envoyer le buffer
+        res.send(pdfBuffer);
+    } catch (error) {
+        // Logger l'erreur
+        console.error('Erreur lors de la génération du PDF:', error);
+        
+        // Retourner une réponse d'erreur appropriée
+        res.status(500).json({
+            statusCode: 500,
+            message: 'Échec de la génération du PDF',
+            error: error.message
+        });
+    }
+}
+
  
 }

@@ -37,6 +37,7 @@ export class CreateArticleExpensQuotationEntryDto {
   @IsOptional()
   @IsNumber()
   total?: number;
+
   @ApiProperty({ example: 1, type: Number, required: false })
   @IsOptional()
   @IsInt()
@@ -55,4 +56,14 @@ export class CreateArticleExpensQuotationEntryDto {
   @ApiProperty({ required: false, type: [Number] })
   @IsOptional()
   taxes?: number[];
+
+  @ApiProperty({ example: 2, type: Number, required: false })
+  @IsOptional()
+  @IsNumber()
+  orderedQuantity?: number;
+
+  @ApiProperty({ example: 50, type: Number, required: false })
+  @IsOptional()
+  @IsNumber()
+  originalStock?: number;
 }

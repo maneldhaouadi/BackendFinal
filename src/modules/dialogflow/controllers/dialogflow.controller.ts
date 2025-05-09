@@ -8,7 +8,7 @@ export class DialogflowController {
   private readonly logger = new Logger(DialogflowController.name);
   private readonly PROJECT_ID = 'votre-project-id-dialogflow'; 
   constructor(private readonly dialogflowService: DialogflowService) {}
-/*
+
   @Post()
   public async handleDialogflowRequest(
     @Body() fullRequest: {
@@ -283,7 +283,7 @@ export class DialogflowController {
         quotationData.currentArticle = {
             articleId: articleId,
             quantity: 1,
-            unit_price: articleInfo.salePrice,
+            unit_price: articleInfo.unitPrice,
             discount: 0,
             discount_type: DISCOUNT_TYPES.PERCENTAGE,
             articleName: articleInfo.title // Pour référence ultérieure
@@ -864,5 +864,5 @@ private extractValidQuantity(request: any): number | null {
   }
 
   return null;
-}*/
+}
 }

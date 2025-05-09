@@ -59,4 +59,10 @@ export class ResponseExpensePaymentDto {
           @IsString()
           @MaxLength(25)
           sequentialNumbr?: string;
-}
+
+          @IsOptional()
+          @IsString()
+          @MaxLength(25)
+          sequential?: string;
+
+        }

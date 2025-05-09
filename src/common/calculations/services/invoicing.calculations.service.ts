@@ -1,6 +1,7 @@
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
 import { LineItem } from '../interfaces/line-item.interface';
 import { Injectable } from '@nestjs/common';
+import { ExpenseInvoiceEntity } from 'src/modules/expense-invoice/repositories/entities/expense-invoice.entity';
 
 @Injectable()
 export class InvoicingCalculationsService {
@@ -10,7 +11,27 @@ export class InvoicingCalculationsService {
     const { quantity, unit_price } = lineItem;
     return quantity * unit_price;
   }
+  calculateFodec(invoice: ExpenseInvoiceEntity): number {
+    // Implémentez votre calcul FODEC ici
+    // Exemple simple :
+    return invoice.subTotal * 0.01; // 1% du total HT
+}
 
+calculateTotalTax(invoice: ExpenseInvoiceEntity): number {
+    let totalTax = 0;
+    
+    invoice.articleExpenseEntries?.forEach(entry => {
+        entry.expenseArticleInvoiceEntryTaxes?.forEach(taxEntry => {
+            if (taxEntry.tax?.isRate) {
+                totalTax += entry.subTotal * (taxEntry.tax.value / 100);
+            } else {
+                totalTax += taxEntry.tax?.value || 0;
+            }
+        });
+    });
+
+    return totalTax;
+}
   //calculate total for a line item
   calculateTotalForLineItem(lineItem: LineItem) {
     const { taxes, discount, discount_type } = lineItem;

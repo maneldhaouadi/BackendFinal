@@ -19,6 +19,7 @@ import { InvoiceModule } from 'src/modules/invoice/invoice.module';
 import { TaxModule } from 'src/modules/tax/tax.module';
 import { ExpensQuotationController } from './controllers/expensquotation.controller';
 import { QuotationRepositoryModule } from './repositories/expensquotation.repository.module';
+import { TemplateModule } from '../template/template.module';
 
 @Module({
   controllers: [ExpensQuotationController], // Ajout du contrôleur ici
@@ -47,6 +48,7 @@ import { QuotationRepositoryModule } from './repositories/expensquotation.reposi
     GatewaysModule,
     CalculationsModule,
     StorageModule,
+    TemplateModule
   ],
 })
 export class ExpenseQuotationModule {}

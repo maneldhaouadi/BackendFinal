@@ -66,12 +66,12 @@ export class ExpensePaymentEntity extends EntityHelper {
   @Column({ type: 'int', nullable: true })
   pdfFileId: number;
 
-  @Column({ type: 'varchar', length: 25, unique: true,nullable:true})
+  @Column({ type: 'varchar', length: 25, unique: true, nullable: false })
   sequential: string;
 
-  @Column({ type: 'varchar', length: 25, nullable: true })
+  @Column({ type: 'varchar', length: 25, nullable: false })
   sequentialNumbr: string;
-
+  
   @ManyToOne(() => CurrencyEntity)
   @JoinColumn({ name: 'targetCurrencyId' })
   targetCurrency: CurrencyEntity;

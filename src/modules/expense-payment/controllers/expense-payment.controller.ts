@@ -3,11 +3,17 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
+  HttpException,
+  HttpStatus,
+  NotFoundException,
   Param,
+  ParseIntPipe,
   Post,
   Put,
   Query,
   Request,
+  Res,
   UseInterceptors,
 } from '@nestjs/common';
 import { ApiTags, ApiParam } from '@nestjs/swagger';
@@ -22,6 +28,8 @@ import { ExpensePaymentService } from '../services/expense-payment.service';
 import { ResponseExpensePaymentDto } from '../dtos/expense-payment.response.dto';
 import { UpdateExpensePaymentDto } from '../dtos/expense-payment.update.dto';
 import { ExpenseCreatePaymentDto } from '../dtos/expense-payment.create.dto';
+import { Response } from 'express';
+
 
 @ApiTags('expense-payment')
 @Controller({
@@ -31,7 +39,7 @@ import { ExpenseCreatePaymentDto } from '../dtos/expense-payment.create.dto';
 @UseInterceptors(LogInterceptor)
 export class ExpensePaymentController {
   constructor(private readonly expensePaymentService: ExpensePaymentService) {}
-/*
+
   @Get('/all')
   async findAll(@Query() options: IQueryObject): Promise<ResponseExpensePaymentDto[]> {
     return this.expensePaymentService.findAll(options);
@@ -102,5 +110,33 @@ export class ExpensePaymentController {
   ): Promise<ResponseExpensePaymentDto> {
     req.logInfo = { id };
     return this.expensePaymentService.softDelete(id);
-  }*/
+  }
+  @Get(':id/export-pdf')
+@Header('Content-Type', 'application/pdf')
+async exportPaymentPdf(
+  @Res() res: Response,
+  @Param('id', ParseIntPipe) id: number,
+  @Query('templateId') templateId?: number
+): Promise<void> {
+  try {
+    const pdfBuffer = await this.expensePaymentService.generatePaymentPdf(id, templateId);
+    
+    // Définir les headers manuellement
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=paiement-${id}.pdf`);
+    
+    // Envoyer le buffer
+    res.send(pdfBuffer);
+  } catch (error) {
+    // Logger l'erreur
+    console.error('Erreur lors de la génération du PDF:', error);
+    
+    // Retourner une réponse d'erreur appropriée
+    res.status(500).json({
+      statusCode: 500,
+      message: 'Échec de la génération du PDF',
+      error: error.message
+    });
+  }
+}
 }

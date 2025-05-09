@@ -8,6 +8,8 @@ import { ExpensePaymentService } from './services/expense-payment.service';
 import { ExpensePaymentUploadService } from './services/expense-payment-upload.service';
 import { ExpensePaymentInvoiceEntryService } from './services/expense-payment-invoice-entry.service';
 import { ExpenseInvoiceModule } from '../expense-invoice/expense-invoice.module';
+import { TemplateModule } from '../template/template.module';
+import { PdfModule } from 'src/common/pdf/pdf.module';
 
 @Module({
   controllers: [],
@@ -18,6 +20,9 @@ import { ExpenseInvoiceModule } from '../expense-invoice/expense-invoice.module'
     CurrencyModule,
     ExpenseInvoiceModule,
     StorageModule,
+    TemplateModule,
+    PdfModule,
+    
   ],
 })
 export class ExpensePaymentModule {}

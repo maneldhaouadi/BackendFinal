@@ -30,6 +30,10 @@ import { ExpensQuotationMetaDataEntity } from '../repositories/entities/expensqu
 import { StorageBadRequestException } from 'src/common/storage/errors/storage.bad-request.error';
 import { StorageService } from 'src/common/storage/services/storage.service';
 import { ExpensQuotationUploadEntity } from '../repositories/entities/expensquotation-file.entity';
+import { TemplateService } from 'src/modules/template/services/template.service';
+import { TemplateType } from 'src/modules/template/enums/TemplateType';
+import ejs from "ejs";
+
 
 
 @Injectable()
@@ -47,6 +51,7 @@ export class ExpensQuotationService {
     private readonly expensequotationMetaDataService: ExpensQuotationMetaDataService,
     private readonly taxService: TaxService,
     private readonly storageService: StorageService,
+    private readonly templateService:TemplateService,
     
 
     //abstract services
@@ -119,169 +124,276 @@ export class ExpensQuotationService {
 
   
   @Transactional()
-  async save(createQuotationDto: CreateExpensQuotationDto): Promise<ExpensQuotationEntity> {
+async save(createQuotationDto: CreateExpensQuotationDto): Promise<ExpensQuotationEntity> {
     try {
-      console.log('Received DTO:', createQuotationDto);
-  
-      // 1. Vérification initiale du numéro séquentiel
-      if (!createQuotationDto.sequentialNumbr) {
-        throw new Error('Quotation number is required');
-      }
-  
-      if (!/^QUO-\d+$/.test(createQuotationDto.sequentialNumbr)) {
-        throw new Error('Invalid quotation number format. Expected format: QUO-XXXX');
-      }
-  
-      // Vérification de l'unicité du numéro séquentiel
-      const existingQuotation = await this.expensequotationRepository.findOne({
-        where: { sequential: createQuotationDto.sequentialNumbr }
-      });
-  
-      if (existingQuotation) {
-        throw new HttpException(
-          'Ce numéro de devis existe déjà', // Message simple en français
-          HttpStatus.CONFLICT
-        );
-      }
-  
-      // Récupérer les entités associées
-      const [firm, bankAccount, currency] = await Promise.all([
-        this.firmService.findOneByCondition({
-          filter: `id||$eq||${createQuotationDto.firmId}`,
-        }),
-        createQuotationDto.bankAccountId
-          ? this.bankAccountService.findOneById(createQuotationDto.bankAccountId)
-          : Promise.resolve(null),
-        createQuotationDto.currencyId
-          ? this.currencyService.findOneById(createQuotationDto.currencyId)
-          : Promise.resolve(null),
-      ]);
-  
-      if (!firm) {
-        throw new Error('Firm not found');
-      }
-  
-      await this.interlocutorService.findOneById(createQuotationDto.interlocutorId);
-      console.log('Articles received:', createQuotationDto.articleQuotationEntries);
-  
-      // Valider les articles
-      // Valider les articles
-if (!createQuotationDto.articleQuotationEntries?.length) {
-  throw new Error('No article entries provided');
-}
+        console.log('Received DTO:', createQuotationDto);
 
-for (const [index, entry] of createQuotationDto.articleQuotationEntries.entries()) {
-  if (!entry.article?.title) {
-    throw new Error(`Invalid article entry at index ${index}: Title is required`);
-  }
-  
-  if (entry.quantity === undefined || entry.unit_price === undefined) {
-    throw new Error(`Invalid article entry at index ${index}: Quantity and unit price are required`);
-  }
+        // 1. Validation du numéro séquentiel
+        if (!createQuotationDto.sequentialNumbr) {
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.BAD_REQUEST,
+                    message: 'Le numéro de devis est requis',
+                    error: 'Bad Request'
+                },
+                HttpStatus.BAD_REQUEST
+            );
+        }
 
-  // Validation supplémentaire pour les articles existants
- 
-}
-  
-      for (const [index, entry] of createQuotationDto.articleQuotationEntries.entries()) {
-        if (!entry.article?.title || entry.quantity === undefined || entry.unit_price === undefined) {
-          const missingFields = [];
-          if (!entry.article?.title) missingFields.push('title');
-          if (entry.quantity === undefined) missingFields.push('quantity');
-          if (entry.unit_price === undefined) missingFields.push('unit_price');
-          throw new Error(`Invalid article entry at index ${index}: Missing required fields (${missingFields.join(', ')}).`);
+        if (!/^QUO-\d+$/.test(createQuotationDto.sequentialNumbr)) {
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.BAD_REQUEST,
+                    message: 'Format de numéro de devis invalide. Format attendu: QUO-XXXX',
+                    error: 'Bad Request'
+                },
+                HttpStatus.BAD_REQUEST
+            );
         }
-  
-        if (typeof entry.unit_price !== 'number' || typeof entry.quantity !== 'number') {
-          throw new Error(`Invalid type for unit_price or quantity at index ${index}`);
+
+        // 2. Vérification de l'unicité du numéro séquentiel
+        const existingQuotation = await this.expensequotationRepository.findOne({
+            where: { sequential: createQuotationDto.sequentialNumbr }
+        });
+
+        if (existingQuotation) {
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.CONFLICT,
+                    message: `Le numéro séquentiel ${createQuotationDto.sequentialNumbr} existe déjà`,
+                    error: 'Conflict'
+                },
+                HttpStatus.CONFLICT
+            );
         }
-      }
-  
-      // Sauvegarder les articles
-      const articleEntries = await this.expensearticleQuotationEntryService.saveMany(createQuotationDto.articleQuotationEntries);
-      console.log('Saved article entries:', articleEntries);
-  
-      if (!articleEntries?.length) {
-        throw new Error('Article entries could not be saved');
-      }
-  
-      // Calculer les totaux
-      const { subTotal, total } = this.calculationsService.calculateLineItemsTotal(
-        articleEntries.map(entry => entry.total),
-        articleEntries.map(entry => entry.subTotal),
-      );
-  
-      const totalAfterGeneralDiscount = this.calculationsService.calculateTotalDiscount(
-        total,
-        createQuotationDto.discount,
-        createQuotationDto.discount_type,
-      );
-  
-      // Récupérer les line items
-      const lineItems = await this.expensearticleQuotationEntryService.findManyAsLineItem(
-        articleEntries.map(entry => entry.id),
-      );
-  
-      // Calculer le résumé des taxes
-      const taxSummary = await Promise.all(
-        this.calculationsService.calculateTaxSummary(lineItems).map(async item => {
-          const tax = await this.taxService.findOneById(item.taxId);
-          return {
-            ...item,
-            label: tax.label,
-            value: tax.isRate ? tax.value * 100 : tax.value,
-            isRate: tax.isRate,
-          };
-        }),
-      );
-  
-      // Récupérer le fichier PDF
-      let uploadPdfField = null;
-      if (createQuotationDto.pdfFileId) {
-        uploadPdfField = await this.storageService.findOneById(createQuotationDto.pdfFileId);
-        if (!uploadPdfField) {
-          throw new NotFoundException('Uploaded PDF file not found');
+
+        // 3. Récupération des entités associées
+        const [firm, bankAccount, currency, interlocutor] = await Promise.all([
+            this.firmService.findOneByCondition({
+                filter: `id||$eq||${createQuotationDto.firmId}`,
+            }),
+            createQuotationDto.bankAccountId
+                ? this.bankAccountService.findOneById(createQuotationDto.bankAccountId)
+                : Promise.resolve(null),
+            createQuotationDto.currencyId
+                ? this.currencyService.findOneById(createQuotationDto.currencyId)
+                : Promise.resolve(null),
+            this.interlocutorService.findOneById(createQuotationDto.interlocutorId)
+        ]);
+
+        if (!firm) {
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.NOT_FOUND,
+                    message: 'Société non trouvée',
+                    error: 'Not Found'
+                },
+                HttpStatus.NOT_FOUND
+            );
         }
-      }
-  
-      // Sauvegarder les métadonnées
-      const expensequotationMetaData = await this.expensequotationMetaDataService.save({
-        ...createQuotationDto.expensequotationMetaData,
-        taxSummary,
-      });
-  
-      console.log('Quotation metadata saved:', expensequotationMetaData);
-  
-      // Sauvegarder la quotation
-      const quotation = await this.expensequotationRepository.save({
-        ...createQuotationDto,
-        sequential: createQuotationDto.sequentialNumbr, // Utilisation directe de la valeur fournie
-        bankAccountId: bankAccount?.id ?? null,
-        currencyId: currency?.id ?? firm.currencyId,
-        expensearticleQuotationEntries: articleEntries,
-        expensequotationMetaData,
-        subTotal,
-        total: totalAfterGeneralDiscount,
-        uploadPdfField: uploadPdfField ? uploadPdfField.id : null,
-        pdfFileId: uploadPdfField ? uploadPdfField.id : null,
-      });
-  
-      console.log('Final saved quotation:', quotation);
-  
-      // Gérer les uploads
-      if (createQuotationDto.uploads?.length) {
-        await this.expensequotationUploadService.saveMany(
-          quotation.id,
-          createQuotationDto.uploads.map(upload => upload.uploadId)
+
+        if (!interlocutor) {
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.NOT_FOUND,
+                    message: 'Interlocuteur non trouvé',
+                    error: 'Not Found'
+                },
+                HttpStatus.NOT_FOUND
+            );
+        }
+
+        console.log('Articles received:', createQuotationDto.articleQuotationEntries);
+
+        // 4. Validation des articles
+        if (!createQuotationDto.articleQuotationEntries?.length) {
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.BAD_REQUEST,
+                    message: 'Aucun article fourni',
+                    error: 'Bad Request'
+                },
+                HttpStatus.BAD_REQUEST
+            );
+        }
+
+        // Vérification des doublons et validation des articles
+        const articleTitles = new Set<string>();
+        for (const [index, entry] of createQuotationDto.articleQuotationEntries.entries()) {
+            if (!entry.article?.title) {
+                throw new HttpException(
+                    {
+                        statusCode: HttpStatus.BAD_REQUEST,
+                        message: `Article à l'index ${index}: Le titre est requis`,
+                        error: 'Bad Request'
+                    },
+                    HttpStatus.BAD_REQUEST
+                );
+            }
+
+            // Vérification des doublons
+            const lowerCaseTitle = entry.article.title.toLowerCase();
+            if (articleTitles.has(lowerCaseTitle)) {
+                throw new HttpException(
+                    {
+                        statusCode: HttpStatus.CONFLICT,
+                        message: `L'article "${entry.article.title}" existe déjà dans ce devis`,
+                        error: 'Conflict'
+                    },
+                    HttpStatus.CONFLICT
+                );
+            }
+            articleTitles.add(lowerCaseTitle);
+
+            // Validation des quantités et prix
+            if (entry.quantity === undefined || entry.quantity <= 0) {
+                throw new HttpException(
+                    {
+                        statusCode: HttpStatus.BAD_REQUEST,
+                        message: `Article "${entry.article.title}": La quantité doit être supérieure à 0`,
+                        error: 'Bad Request'
+                    },
+                    HttpStatus.BAD_REQUEST
+                );
+            }
+
+            if (entry.unit_price === undefined || entry.unit_price < 0) {
+                throw new HttpException(
+                    {
+                        statusCode: HttpStatus.BAD_REQUEST,
+                        message: `Article "${entry.article.title}": Le prix unitaire doit être positif`,
+                        error: 'Bad Request'
+                    },
+                    HttpStatus.BAD_REQUEST
+                );
+            }
+        }
+
+        // 5. Sauvegarde des articles
+        const articleEntries = await this.expensearticleQuotationEntryService.saveMany(
+            createQuotationDto.articleQuotationEntries
         );
-      }
-  
-      return quotation;
+        console.log('Saved article entries:', articleEntries);
+
+        if (!articleEntries?.length) {
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+                    message: 'Erreur lors de la sauvegarde des articles',
+                    error: 'Internal Server Error'
+                },
+                HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+
+        // 6. Calcul des totaux
+        const { subTotal, total } = this.calculationsService.calculateLineItemsTotal(
+            articleEntries.map(entry => entry.total),
+            articleEntries.map(entry => entry.subTotal),
+        );
+
+        const totalAfterGeneralDiscount = this.calculationsService.calculateTotalDiscount(
+            total,
+            createQuotationDto.discount,
+            createQuotationDto.discount_type,
+        );
+
+        // 7. Récupération des line items
+        const lineItems = await this.expensearticleQuotationEntryService.findManyAsLineItem(
+            articleEntries.map(entry => entry.id),
+        );
+
+        // 8. Calcul du résumé des taxes
+        const taxSummary = await Promise.all(
+            this.calculationsService.calculateTaxSummary(lineItems).map(async item => {
+                const tax = await this.taxService.findOneById(item.taxId);
+                return {
+                    ...item,
+                    label: tax.label,
+                    value: tax.isRate ? tax.value * 100 : tax.value,
+                    isRate: tax.isRate,
+                };
+            }),
+        );
+
+        // 9. Récupération du fichier PDF
+        let uploadPdfField = null;
+        if (createQuotationDto.pdfFileId) {
+            uploadPdfField = await this.storageService.findOneById(createQuotationDto.pdfFileId);
+            if (!uploadPdfField) {
+                throw new HttpException(
+                    {
+                        statusCode: HttpStatus.NOT_FOUND,
+                        message: 'Fichier PDF uploadé non trouvé',
+                        error: 'Not Found'
+                    },
+                    HttpStatus.NOT_FOUND
+                );
+            }
+        }
+
+        // 10. Sauvegarde des métadonnées
+        const expensequotationMetaData = await this.expensequotationMetaDataService.save({
+            ...createQuotationDto.expensequotationMetaData,
+            taxSummary,
+        });
+
+        console.log('Quotation metadata saved:', expensequotationMetaData);
+
+        // 11. Sauvegarde du devis
+        const quotation = await this.expensequotationRepository.save({
+            ...createQuotationDto,
+            sequential: createQuotationDto.sequentialNumbr,
+            bankAccountId: bankAccount?.id ?? null,
+            currencyId: currency?.id ?? firm.currencyId,
+            expensearticleQuotationEntries: articleEntries,
+            expensequotationMetaData,
+            subTotal,
+            total: totalAfterGeneralDiscount,
+            uploadPdfField: uploadPdfField ? uploadPdfField.id : null,
+            pdfFileId: uploadPdfField ? uploadPdfField.id : null,
+        });
+
+        console.log('Final saved quotation:', quotation);
+
+        // 12. Gestion des uploads
+        if (createQuotationDto.uploads?.length) {
+            await this.expensequotationUploadService.saveMany(
+                quotation.id,
+                createQuotationDto.uploads.map(upload => upload.uploadId)
+            );
+        }
+
+        return quotation;
     } catch (error) {
-      console.error('Error saving quotation:', error);
-      throw new Error(`Failed to save quotation: ${error.message}`);
+        console.error('Error saving quotation:', error);
+        
+        if (error.code === 'ER_DUP_ENTRY') {
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.CONFLICT,
+                    message: error.message,
+                    error: 'Duplicate Entry'
+                },
+                HttpStatus.CONFLICT
+            );
+        }
+        
+        if (error instanceof HttpException) {
+            throw error;
+        }
+        
+        throw new HttpException(
+            {
+                statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+                message: 'Erreur lors de la création du devis',
+                error: 'Internal Server Error',
+                details: error.message
+            },
+            HttpStatus.INTERNAL_SERVER_ERROR
+        );
     }
-  }
+}
 
   
   async findOneById(id: number): Promise<ExpensQuotationEntity> {
@@ -715,6 +827,130 @@ async updateQuotationStatusIfExpired(quotationId: number): Promise<ExpensQuotati
     return quotation;
   }
 
+
+  async checkSequentialNumberExists(sequentialNumber: string): Promise<boolean> {
+    if (!sequentialNumber) return false;
+    
+    const existingQuotation = await this.expensequotationRepository.findOne({
+      where: { sequential: sequentialNumber }
+    });
+    
+    return !!existingQuotation;
+  }
+
+  async generateQuotationPdf(quotationId: number, templateId?: number): Promise<Buffer> {
+    // 1. Récupérer le devis avec toutes les relations nécessaires
+    const quotation = await this.expensequotationRepository.findOne({
+        where: { id: quotationId },
+        relations: [
+            'firm', 
+            'interlocutor', 
+            'expensearticleQuotationEntries', 
+            'expensearticleQuotationEntries.article',
+            'expensearticleQuotationEntries.articleExpensQuotationEntryTaxes',
+            'expensearticleQuotationEntries.articleExpensQuotationEntryTaxes.tax',
+            'currency',
+            'expensequotationMetaData',
+            'cabinet',
+            'cabinet.address',
+            'bankAccount'
+        ]
+    });
+
+    if (!quotation) {
+        throw new NotFoundException(`Devis avec ID ${quotationId} non trouvé`);
+    }
+
+    // 2. Récupérer le template
+    const template = templateId 
+        ? await this.templateService.getTemplateById(templateId)
+        : await this.templateService.getDefaultTemplate(TemplateType.QUOTATION);
+    
+    if (!template) {
+        throw new NotFoundException('Aucun template de devis trouvé');
+    }
+
+    // 3. Calculer les totaux
+
+    // 4. Préparer les données pour le template
+    const templateData = {
+        quotation: {
+            ...quotation,
+            // Formatage des dates
+            date: format(quotation.date, 'dd/MM/yyyy'),
+            dueDate: quotation.dueDate ? format(quotation.dueDate, 'dd/MM/yyyy') : 'Non spécifié',
+            
+            // Articles avec formatage spécifique
+            articles: quotation.expensearticleQuotationEntries?.map(entry => ({
+                reference: entry.article?.reference,
+                title: entry.article?.title,
+                description: entry.article?.description || '',
+                quantity: entry.quantity,
+                unit_price: entry.unit_price,
+                discount: entry.discount,
+                discount_type: entry.discount_type,
+                subTotal: entry.subTotal,
+                total: entry.total,
+                taxes: entry.articleExpensQuotationEntryTaxes?.map(taxEntry => ({
+                    label: taxEntry.tax?.label,
+                    rate: taxEntry.tax?.value,
+                    amount: taxEntry.tax?.value * entry.subTotal / 100
+                })) || []
+            })) || [],
+            
+            // Totaux calculés
+            totalHT: quotation.subTotal,
+            total: quotation.total,
+            
+            // Gestion des valeurs nulles
+            firm: {
+                ...quotation.firm,
+                deliveryAddress: quotation.firm.deliveryAddress || {
+                    address: '',
+                    zipcode: '',
+                    region: '',
+                    country: ''
+                },
+                invoicingAddress: quotation.firm.invoicingAddress || quotation.firm.deliveryAddress || {
+                    address: '',
+                    zipcode: '',
+                    region: '',
+                    country: ''
+                }
+            },
+            cabinet: quotation.cabinet || {
+                enterpriseName: '',
+                taxIdentificationNumber: '',
+                address: {
+                    address: '',
+                    zipcode: '',
+                    region: '',
+                    country: ''
+                },
+                phone: ''
+            },
+            currency: quotation.currency || {
+                symbol: '€'
+            }
+        }
+    };
+
+    // 5. Nettoyer et compiler le template
+    const cleanedContent = template.content
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&');
+
+    const compiledHtml = ejs.render(cleanedContent, templateData);
+
+    // 6. Générer le PDF
+    return this.pdfService.generateFromHtml(compiledHtml, {
+        format: 'A4',
+        margin: { top: '20mm', right: '10mm', bottom: '20mm', left: '10mm' },
+        printBackground: true
+    });
+}
 
 
   
