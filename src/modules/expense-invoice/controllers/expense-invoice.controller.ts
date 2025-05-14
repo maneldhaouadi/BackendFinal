@@ -189,6 +189,14 @@ async findUnpaidByFirm(
   return this.invoiceService.findUnpaidByFirm(firmId);
 }
 
+@Get('/check-sequential/:sequentialNumber')
+async checkSequentialNumber(
+    @Param('sequentialNumber') sequentialNumber: string
+): Promise<{ exists: boolean }> {
+    const exists = await this.invoiceService.checkSequentialNumberExists(sequentialNumber);
+    return { exists };
+}
+
 
 }
 

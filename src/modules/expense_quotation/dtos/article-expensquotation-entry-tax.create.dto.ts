@@ -8,7 +8,6 @@ export class CreateArticleExpensQuotationEntryTaxDto {
   taxId: number;
 
   @ApiProperty({})
-  @IsOptional()
   @IsNumber()
   expenseArticleEntryId?: number;
 }

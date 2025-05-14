@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, StreamableFile } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException, StreamableFile } from "@nestjs/common";
 import { ExpenseInvoiceRepository } from "../repositories/repository/expense-invoice.repository";
 import { ExpenseArticleInvoiceEntryService } from "./expense-article-invoice-entry.service";
 import { ExpenseInvoiceUploadService } from "./expense-invoice-upload.service";
@@ -286,6 +286,7 @@ private async generateSequentialNumber(): Promise<string> {
           total: entry.total,
           articleId: entry.article.id,
           article: entry.article,
+          reference:entry.reference,
           taxes: entry.articleExpensQuotationEntryTaxes.map((entry) => {
             return entry.taxId;
           }),
@@ -749,6 +750,21 @@ async findUnpaidByFirm(firmId: number): Promise<ExpenseInvoiceEntity[]> {
     relations: ['currency', 'firm'] // Ajoutez les relations nécessaires
   });
 }
+
+ async checkSequentialNumberExists(sequentialNumber: string): Promise<boolean> {
+    // Vérification du format
+    if (!/^INV-\d+$/.test(sequentialNumber)) {
+        throw new BadRequestException('Format de numéro séquentiel invalide. Format attendu: QUO-XXXX');
+    }
+
+    // Recherche dans la base de données
+    const existingQuotation = await this.invoiceRepository.findOne({
+        where: { sequential: sequentialNumber }
+    });
+
+    return !!existingQuotation;
+}
+
 
 }
 

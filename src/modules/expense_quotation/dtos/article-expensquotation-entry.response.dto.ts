@@ -44,5 +44,5 @@ export class ResponseArticleExpensQuotationEntryDto {
 
   @ApiProperty({ required: false })
   @IsOptional()
-  articleQuotationEntryTaxes?: any[];
+  articleExpensQuotationEntryTaxes?: any[];
 }

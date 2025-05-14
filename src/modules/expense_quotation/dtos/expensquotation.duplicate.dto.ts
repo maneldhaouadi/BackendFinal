@@ -10,4 +10,9 @@ export class DuplicateExpensQuotationDto {
   @IsBoolean()
   @IsOptional()
   includeFiles?: boolean;
+
+  @ApiProperty({ example: true, type: Boolean })
+  @IsBoolean()
+  @IsOptional()
+  generateNewReferences?: boolean;
 }

@@ -26,7 +26,7 @@ export class ArticleExpensQuotationEntryTaxEntity extends EntityHelper {
   // Soft delete et timestamps hérités de EntityHelper
 
   @Column({ type: 'int', name: 'expenseArticleEntryId' })
-  articleExpensQuotationEntryId: number;
+  expenseArticleEntryId: number;
   
   @Column({ type: 'int' })
   taxId: number; // Clé étrangère pour TaxEntity

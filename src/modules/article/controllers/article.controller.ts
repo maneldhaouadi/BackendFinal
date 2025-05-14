@@ -110,6 +110,19 @@ async bulkUpdateStatus(
     return this.articleService.getSimpleStats();
   }
 
+  @Get('/by-reference/:reference')
+@ApiOperation({ summary: 'Get article by reference' })
+@ApiParam({ name: 'reference', description: 'Article reference', type: String })
+async findOneByReference(
+  @Param('reference') reference: string
+): Promise<ResponseArticleDto | null> {
+  const article = await this.articleService.findOneByReference(reference);
+  if (!article) {
+    return null;
+  }
+  return this.mapToResponseDto(article);
+}
+
   @Get('/stats/stock-alerts')
   @ApiOperation({ summary: 'Obtenir les alertes de stock' })
   async getStockAlerts() {

@@ -17,6 +17,9 @@ export class ExpenseArticleInvoiceEntryEntity extends EntityHelper {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column({ length: 50, nullable: false })
+  reference: string;
+
   @Column({ type: 'float', nullable: true })
   unit_price: number;
 
@@ -46,18 +49,15 @@ export class ExpenseArticleInvoiceEntryEntity extends EntityHelper {
   @JoinColumn({ name: 'expenseInvoiceId' })  
   expenseInvoice: ExpenseInvoiceEntity;
   
+  @Column({ type: 'int', nullable: true })
+  expenseInvoiceId: number;
 
-@Column({ type: 'int', nullable: true })
-expenseInvoiceId: number;
-
-@Column({ type: 'float', nullable: true })
-amount: number;
-
+  @Column({ type: 'float', nullable: true })
+  amount: number;
 
   @OneToMany(
     () => ExpenseArticleInvoiceEntryTaxEntity,
     (expenseArticleInvoiceEntryTax) => expenseArticleInvoiceEntryTax.expenseArticleInvoiceEntry,
   )
   expenseArticleInvoiceEntryTaxes: ExpenseArticleInvoiceEntryTaxEntity[];
-
 }

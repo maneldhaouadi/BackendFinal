@@ -112,7 +112,7 @@ expensearticleQuotationEntries: ArticleExpensQuotationEntryEntity[];
 
   invoices: ExpenseInvoiceEntity[];
 
-  @Column({ type: 'varchar', length: 25, nullable: true })
+  @Column({name: 'sequentialNumbr',type: 'varchar', length: 25, nullable: true })
   sequentialNumbr: string;
 
   @OneToOne(() => UploadEntity, { nullable: true })

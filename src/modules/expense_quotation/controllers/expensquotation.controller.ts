@@ -165,17 +165,16 @@ async deletePdfFile(@Param('id') id: number): Promise<void> {
     return this.expensQuotationService.updateQuotationStatusIfExpired(quotationId); // Appelez la méthode du service
   }
 
-  @Get('/check-sequential-number')
-async checkSequentialNumberExists(
-  @Query('sequentialNumber') sequentialNumber: string
+
+  @Get('/check-sequential/:sequentialNumber')
+async checkSequentialNumber(
+    @Param('sequentialNumber') sequentialNumber: string
 ): Promise<{ exists: boolean }> {
-  if (!sequentialNumber) {
-    throw new BadRequestException('Sequential number is required');
-  }
-  
-  const exists = await this.expensQuotationService.checkSequentialNumberExists(sequentialNumber);
-  return { exists };
+    const exists = await this.expensQuotationService.checkSequentialNumberExists(sequentialNumber);
+    return { exists };
 }
+ 
+
 @Get(':id/export-pdf')
 @Header('Content-Type', 'application/pdf')
 async exportQuotationPdf(

@@ -135,7 +135,13 @@ async save(createPaymentInvoiceEntryDto: ExpenseCreatePaymentInvoiceEntryDto): P
   });
 }
 
-
+@Transactional()
+async findAllByPaymentId(paymentId: number): Promise<ExpensePaymentInvoiceEntryEntity[]> {
+  return this.expensePaymentInvoiceEntryRepository.findAll({
+    where: { paymentId },
+    relations: ['expenseInvoice', 'expenseInvoice.currency']
+  });
+}
 
   @Transactional()
   async saveMany(
@@ -165,112 +171,114 @@ async save(createPaymentInvoiceEntryDto: ExpenseCreatePaymentInvoiceEntryDto): P
     return { savedEntries, skippedEntries };
   }
   @Transactional()
-async update(
-  id: number,
-  updatePaymentInvoiceEntryDto: UpdateExpensePaymentInvoiceEntryDto,
-): Promise<ExpensePaymentInvoiceEntryEntity> {
-  // 1. Récupérer l'entrée existante et la facture associée
-  const existingEntry = await this.expensePaymentInvoiceEntryRepository.findOneById(id);
-  if (!existingEntry) {
-    throw new ExpensePaymentInvoiceEntryNotFoundException();
-  }
-
-  const invoice = await this.expenseInvoiceService.findOneByCondition({
-    filter: `id||$eq||${existingEntry.expenseInvoiceId}`,
-    join: 'currency,paymentEntries',
-  });
-
-  if (!invoice) {
-    throw new Error(`Invoice with ID ${existingEntry.expenseInvoiceId} not found`);
-  }
-
-  // 2. Préparer les fonctions de conversion dinero
-  const createDinero = (amount: number) => dinero({
-    amount: createDineroAmountFromFloatWithDynamicCurrency(amount, invoice.currency.digitAfterComma),
-    precision: invoice.currency.digitAfterComma,
-  });
-
-  const zero = createDinero(0);
-  const tolerance = createDinero(0.01);
-
-  // 3. Calculer le montant existant des autres paiements (sans l'entrée actuelle)
-  const otherPaymentsSum = (invoice.payments || [])
-    .filter(entry => entry.id !== id)
-    .reduce((sum, entry) => sum + (entry.amount || 0), 0);
-
-  // 4. Calculer le nouveau montant de l'entrée
-  let newEntryAmountInInvoiceCurrency: dinero.Dinero;
-  let newEntryAmountInOriginalCurrency: dinero.Dinero;
-
-  if (updatePaymentInvoiceEntryDto.exchangeRate) {
-    // Conversion devise étrangère → devise facture
-    const originalAmount = updatePaymentInvoiceEntryDto.originalAmount ?? existingEntry.originalAmount;
-    if (!originalAmount) {
-      throw new Error('Original amount is required when exchange rate is provided');
+  async update(
+    id: number,
+    updatePaymentInvoiceEntryDto: UpdateExpensePaymentInvoiceEntryDto,
+  ): Promise<ExpensePaymentInvoiceEntryEntity> {
+    // 1. Récupérer l'entrée existante et la facture associée
+    const existingEntry = await this.expensePaymentInvoiceEntryRepository.findOneById(id);
+    if (!existingEntry) {
+      throw new ExpensePaymentInvoiceEntryNotFoundException();
     }
-
-    newEntryAmountInOriginalCurrency = createDinero(originalAmount);
-    newEntryAmountInInvoiceCurrency = newEntryAmountInOriginalCurrency.multiply(
-      updatePaymentInvoiceEntryDto.exchangeRate
-    );
-  } else {
-    // Même devise
-    const amount = updatePaymentInvoiceEntryDto.amount ?? existingEntry.amount;
-    newEntryAmountInInvoiceCurrency = createDinero(amount);
-    newEntryAmountInOriginalCurrency = newEntryAmountInInvoiceCurrency;
+  
+    const invoice = await this.expenseInvoiceService.findOneByCondition({
+      filter: `id||$eq||${existingEntry.expenseInvoiceId}`,
+      join: 'currency,payments',
+    });
+  
+    if (!invoice) {
+      throw new Error(`Invoice with ID ${existingEntry.expenseInvoiceId} not found`);
+    }
+  
+    // 2. Préparer les fonctions de conversion dinero
+    const createDinero = (amount: number) => dinero({
+      amount: createDineroAmountFromFloatWithDynamicCurrency(amount, invoice.currency.digitAfterComma),
+      precision: invoice.currency.digitAfterComma,
+    });
+  
+    const zero = createDinero(0);
+    const tolerance = createDinero(0.01);
+  
+    // 3. Calculer le montant total existant payé (y compris l'entrée actuelle)
+    const totalPaidBeforeUpdate = (invoice.payments || [])
+      .reduce((sum, entry) => sum + (entry.amount || 0), 0);
+  
+    // 4. Calculer le nouveau montant de l'entrée
+    let newEntryAmountInInvoiceCurrency: dinero.Dinero;
+    let newEntryAmountInOriginalCurrency: dinero.Dinero;
+  
+    if (updatePaymentInvoiceEntryDto.exchangeRate) {
+      // Conversion devise étrangère → devise facture
+      const originalAmount = updatePaymentInvoiceEntryDto.originalAmount ?? existingEntry.originalAmount;
+      if (!originalAmount) {
+        throw new Error('Original amount is required when exchange rate is provided');
+      }
+  
+      newEntryAmountInOriginalCurrency = createDinero(originalAmount);
+      newEntryAmountInInvoiceCurrency = newEntryAmountInOriginalCurrency.multiply(
+        updatePaymentInvoiceEntryDto.exchangeRate
+      );
+    } else {
+      // Même devise
+      const amount = updatePaymentInvoiceEntryDto.amount ?? existingEntry.amount;
+      newEntryAmountInInvoiceCurrency = createDinero(amount);
+      newEntryAmountInOriginalCurrency = newEntryAmountInInvoiceCurrency;
+    }
+  
+    // 5. Calculer le nouveau montant total payé
+    const newTotalPaid = createDinero(totalPaidBeforeUpdate)
+      .subtract(createDinero(existingEntry.amount))
+      .add(newEntryAmountInInvoiceCurrency);
+  
+    const invoiceTotal = createDinero(invoice.total);
+    const taxWithholdingAmount = createDinero(invoice.taxWithholdingAmount || 0);
+  
+    // 6. Calculer le montant restant et déterminer le nouveau statut
+    const remainingAmount = invoiceTotal
+      .subtract(newTotalPaid)
+      .subtract(taxWithholdingAmount);
+  
+    let newInvoiceStatus;
+    if (newTotalPaid.equalsTo(zero)) {
+      newInvoiceStatus = EXPENSE_INVOICE_STATUS.Unpaid;
+    } else if (remainingAmount.lessThanOrEqual(tolerance)) {
+      newInvoiceStatus = EXPENSE_INVOICE_STATUS.Paid;
+    } else {
+      newInvoiceStatus = EXPENSE_INVOICE_STATUS.PartiallyPaid;
+    }
+  
+    // 7. Mettre à jour la facture
+    await this.expenseInvoiceService.updateFields(invoice.id, {
+      amountPaid: newTotalPaid.toUnit(),
+      status: newInvoiceStatus,
+    });
+  
+    // 8. Mettre à jour l'entrée de paiement
+    const updatedEntry = await this.expensePaymentInvoiceEntryRepository.save({
+      ...existingEntry,
+      ...updatePaymentInvoiceEntryDto,
+      amount: newEntryAmountInInvoiceCurrency.toUnit(),
+      originalAmount: newEntryAmountInOriginalCurrency.toUnit(),
+      exchangeRate: updatePaymentInvoiceEntryDto.exchangeRate ?? existingEntry.exchangeRate ?? 1,
+      originalCurrencyId: updatePaymentInvoiceEntryDto.originalCurrencyId ?? existingEntry.originalCurrencyId ?? invoice.currency.id,
+    });
+  
+    // Journalisation pour le débogage
+    console.log('Payment entry updated:', {
+      entryId: id,
+      oldAmount: existingEntry.amount,
+      newAmount: updatedEntry.amount,
+      oldOriginalAmount: existingEntry.originalAmount,
+      newOriginalAmount: updatedEntry.originalAmount,
+      exchangeRate: updatedEntry.exchangeRate,
+      invoiceStatus: newInvoiceStatus,
+      invoiceTotal: invoiceTotal.toUnit(),
+      newTotalPaid: newTotalPaid.toUnit(),
+      remainingAmount: remainingAmount.toUnit()
+    });
+  
+    return updatedEntry;
   }
-
-  // 5. Calculer le nouveau montant total payé
-  const newTotalPaid = createDinero(otherPaymentsSum).add(newEntryAmountInInvoiceCurrency);
-  const invoiceTotal = createDinero(invoice.total);
-  const taxWithholdingAmount = createDinero(invoice.taxWithholdingAmount || 0);
-
-  // 6. Calculer le montant restant et déterminer le nouveau statut
-  const remainingAmount = invoiceTotal
-    .subtract(newTotalPaid)
-    .subtract(taxWithholdingAmount);
-
-  let newInvoiceStatus;
-  if (newTotalPaid.equalsTo(zero)) {
-    newInvoiceStatus = EXPENSE_INVOICE_STATUS.Unpaid;
-  } else if (remainingAmount.lessThanOrEqual(tolerance)) {
-    newInvoiceStatus = EXPENSE_INVOICE_STATUS.Paid;
-  } else {
-    newInvoiceStatus = EXPENSE_INVOICE_STATUS.PartiallyPaid;
-  }
-
-  // 7. Mettre à jour la facture
-  await this.expenseInvoiceService.updateFields(invoice.id, {
-    amountPaid: newTotalPaid.toUnit(),
-    status: newInvoiceStatus,
-  });
-
-  // 8. Mettre à jour l'entrée de paiement
-  const updatedEntry = await this.expensePaymentInvoiceEntryRepository.save({
-    ...existingEntry,
-    ...updatePaymentInvoiceEntryDto,
-    amount: newEntryAmountInInvoiceCurrency.toUnit(),
-    originalAmount: newEntryAmountInOriginalCurrency.toUnit(),
-    exchangeRate: updatePaymentInvoiceEntryDto.exchangeRate ?? existingEntry.exchangeRate ?? 1,
-    originalCurrencyId: updatePaymentInvoiceEntryDto.originalCurrencyId ?? existingEntry.originalCurrencyId ?? invoice.currency.id,
-  });
-
-  // Journalisation pour le débogage
-  console.log('Payment entry updated:', {
-    entryId: id,
-    oldAmount: existingEntry.amount,
-    newAmount: updatedEntry.amount,
-    oldOriginalAmount: existingEntry.originalAmount,
-    newOriginalAmount: updatedEntry.originalAmount,
-    exchangeRate: updatedEntry.exchangeRate,
-    invoiceStatus: newInvoiceStatus,
-    invoiceTotal: invoiceTotal.toUnit(),
-    newTotalPaid: newTotalPaid.toUnit(),
-    remainingAmount: remainingAmount.toUnit()
-  });
-
-  return updatedEntry;
-}
 
 @Transactional()
 async softDelete(id: number): Promise<ExpensePaymentInvoiceEntryEntity> {

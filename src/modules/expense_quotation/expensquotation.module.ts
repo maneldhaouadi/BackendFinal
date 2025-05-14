@@ -48,7 +48,8 @@ import { TemplateModule } from '../template/template.module';
     GatewaysModule,
     CalculationsModule,
     StorageModule,
-    TemplateModule
+    TemplateModule,
+    ArticleModule
   ],
 })
 export class ExpenseQuotationModule {}

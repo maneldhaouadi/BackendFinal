@@ -114,6 +114,24 @@ export class ArticleService {
     throw error;
   }
 
+
+  // Dans votre ArticleService
+async strictUpdate(id: number, data: UpdateArticleDto): Promise<ArticleEntity> {
+  // Vérifier que l'article existe
+  const article = await this.articleRepository.findOne({ where: { id } });
+  if (!article) {
+    throw new NotFoundException(`Article with ID ${id} not found`);
+  }
+
+  // Mise à jour stricte - ne permet pas de créer un nouvel article
+  await this.articleRepository.update(id, data);
+  
+  // Retourner l'article mis à jour
+  return this.articleRepository.findOne({ where: { id } });
+}
+
+  
+  
   private async generateUniqueReference(): Promise<string> {
     let reference: string;
     let attempts = 0;
@@ -422,6 +440,17 @@ export class ArticleService {
   
     return validTransitions[currentStatus].includes(newStatus);
   }
+
+  async findManyByIds(ids: number[]): Promise<ArticleEntity[]> {
+    if (!ids || ids.length === 0) {
+        return [];
+    }
+
+    return this.articleRepository.find({
+        where: { id: In(ids) },
+        relations: ['history']
+    });
+}
 
   private getChanges(
     existingArticle: ArticleEntity,
@@ -1189,6 +1218,26 @@ async getStockHealth(): Promise<{
   async getTotal(): Promise<number> {
     return this.articleRepository.getTotalCount();
   }
+
+  async findOneByReference(reference: string): Promise<ArticleEntity | null> {
+    if (!reference) {
+      return null;
+    }
+    
+    try {
+      const article = await this.articleRepository.findOne({ 
+        where: { reference: ILike(reference) },
+        relations: ['history']
+      });
+      
+      return article || null;
+    } catch (error) {
+      console.error('Error finding article by reference:', error);
+      return null;
+    }
+  }
+
+  
 /*
   async saveWithFilterTitle(
     createArticleDto: CreateArticleDto,

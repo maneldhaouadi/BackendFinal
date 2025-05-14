@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { TaxService } from 'src/modules/tax/services/tax.service';
 import { ArticleService } from 'src/modules/article/services/article.service';
 import { ResponseArticleDto } from 'src/modules/article/dtos/article.response.dto';
@@ -14,6 +14,9 @@ import { ExpenseArticleInvoiceEntryEntity } from '../repositories/entities/expen
 import { ExpenseCreateArticleInvoiceEntryDto } from '../dtos/expense-article-invoice-entry.create.dto';
 import { ExpenseUpdateArticleInvoiceEntryDto } from '../dtos/expense-article-invoice-entry.update.dto';
 import { ExpenseArticleInvoiceEntryNotFoundException } from '../errors/expense-article-invoice-entry.notfound.error';
+import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
+import { UpdateArticleDto } from 'src/modules/article/dtos/article.update.dto';
+import { ArticleStatus } from 'src/modules/article/interfaces/article-data.interface';
 
 @Injectable()
 export class ExpenseArticleInvoiceEntryService {
@@ -74,62 +77,79 @@ export class ExpenseArticleInvoiceEntryService {
   }
 
   async save(
-  createArticleInvoiceEntryDto: ExpenseCreateArticleInvoiceEntryDto,
-): Promise<ExpenseArticleInvoiceEntryEntity> {
-  // Récupérer les taxes associées
-  const taxes = createArticleInvoiceEntryDto.taxes
-    ? await Promise.all(
-        createArticleInvoiceEntryDto.taxes.map((id) =>
-          this.taxService.findOneById(id),
-        ),
-      )
-    : [];
-
-  // Vérifier si l'article existe, sinon le créer
-  let article = await this.articleService.findOneByCondition({
-    filter: `title||$eq||${createArticleInvoiceEntryDto.article.title}`,
-  });
-
-  if (!article) {
-    article = await this.articleService.save(createArticleInvoiceEntryDto.article);
+    createArticleInvoiceEntryDto: ExpenseCreateArticleInvoiceEntryDto,
+  ): Promise<ExpenseArticleInvoiceEntryEntity> {
+    // Récupérer les taxes
+    const taxes = createArticleInvoiceEntryDto.taxes
+      ? await Promise.all(
+          createArticleInvoiceEntryDto.taxes.map(id => this.taxService.findOneById(id))
+        )
+      : [];
+  
+    // Trouver l'article par référence ou titre
+    let article = createArticleInvoiceEntryDto.article.reference
+      ? await this.articleService.findOneByCondition({
+          filter: `reference||$eq||${createArticleInvoiceEntryDto.article.reference}`
+        })
+      : null;
+  
+    if (!article && createArticleInvoiceEntryDto.article.title) {
+      article = await this.articleService.findOneByCondition({
+        filter: `title||$eq||${createArticleInvoiceEntryDto.article.title}`
+      });
+    }
+  
+    if (!article) {
+      // Créer un nouvel article sans historique
+      article = await this.articleService.save({
+        ...createArticleInvoiceEntryDto.article,
+        reference: createArticleInvoiceEntryDto.article.reference || 
+                  `REF-${Math.floor(100000000 + Math.random() * 900000000)}`,
+        quantityInStock: createArticleInvoiceEntryDto.quantity || 0,
+        unitPrice: createArticleInvoiceEntryDto.unit_price || 0
+      });
+    } else {
+      // Mettre à jour l'article existant sans historique
+      await this.articleService.update(article.id, {
+        quantityInStock: (article.quantityInStock || 0) - (createArticleInvoiceEntryDto.quantity || 0),
+        unitPrice: createArticleInvoiceEntryDto.unit_price || article.unitPrice || 0
+      });
+    }
+  
+    // Créer l'entrée de facture
+    const entry = await this.articleInvoiceEntryRepository.save({
+      ...createArticleInvoiceEntryDto,
+      reference: article.reference,
+      articleId: article.id,
+      article: article,
+      subTotal: this.calculationsService.calculateSubTotalForLineItem({
+        quantity: createArticleInvoiceEntryDto.quantity,
+        unit_price: createArticleInvoiceEntryDto.unit_price,
+        discount: createArticleInvoiceEntryDto.discount,
+        discount_type: createArticleInvoiceEntryDto.discount_type,
+        taxes: taxes
+      }),
+      total: this.calculationsService.calculateTotalForLineItem({
+        quantity: createArticleInvoiceEntryDto.quantity,
+        unit_price: createArticleInvoiceEntryDto.unit_price,
+        discount: createArticleInvoiceEntryDto.discount,
+        discount_type: createArticleInvoiceEntryDto.discount_type,
+        taxes: taxes
+      })
+    });
+  
+    // Sauvegarder les taxes associées
+    if (taxes.length > 0) {
+      await this.articleInvoiceEntryTaxService.saveMany(
+        taxes.map(tax => ({
+          taxId: tax.id,
+          articleInvoiceEntryId: entry.id
+        }))
+      );
+    }
+  
+    return entry;
   }
-
-  // Construire l'objet ligne d'article
-  const lineItem = {
-    quantity: createArticleInvoiceEntryDto.quantity,
-    unit_price: createArticleInvoiceEntryDto.unit_price,
-    discount: createArticleInvoiceEntryDto.discount,
-    discount_type: createArticleInvoiceEntryDto.discount_type,
-    taxes: taxes,
-  };
-
-  // Sauvegarder l'entrée de la facture article
-  const entry = await this.articleInvoiceEntryRepository.save({
-    ...createArticleInvoiceEntryDto,
-    articleId: article.id,
-    article: article,
-    subTotal: this.calculationsService.calculateSubTotalForLineItem(lineItem),
-    total: this.calculationsService.calculateTotalForLineItem(lineItem),
-  });
-
-  // Vérification si l'entrée a bien été créée
-  if (!entry || !entry.id) {
-    throw new Error('Failed to save ExpenseArticleInvoiceEntryEntity');
-  }
-
-  // Sauvegarder les taxes associées
-  if (taxes.length > 0) {
-    await this.articleInvoiceEntryTaxService.saveMany(
-      taxes.map((tax) => ({
-        taxId: tax.id,
-        articleInvoiceEntryId: entry.id,
-      })),
-    );
-  }
-
-  return entry;
-}
-
 
   async saveMany(
     createArticleInvoiceEntryDtos: ExpenseCreateArticleInvoiceEntryDto[],
@@ -144,68 +164,134 @@ export class ExpenseArticleInvoiceEntryService {
 
   async update(
     id: number,
-    updateArticleInvoiceEntryDto: ExpenseUpdateArticleInvoiceEntryDto,
+    updateDto: ExpenseUpdateArticleInvoiceEntryDto,
   ): Promise<ExpenseArticleInvoiceEntryEntity> {
-    //fetch exisiting entry
-    const existingEntry =
-      await this.articleInvoiceEntryRepository.findOneById(id);
-    this.articleInvoiceEntryTaxService.softDeleteMany(
-      existingEntry.expenseArticleInvoiceEntryTaxes.map((taxEntry) => taxEntry.id),
-    );
-
-    //fetch and check the existance of all taxes
-    const taxes = updateArticleInvoiceEntryDto.taxes
-      ? await Promise.all(
-          updateArticleInvoiceEntryDto.taxes.map((id) =>
-            this.taxService.findOneById(id),
-          ),
-        )
-      : [];
-
-    //delete all existing taxes and rebuild
-    for (const taxEntry of existingEntry.expenseArticleInvoiceEntryTaxes) {
-      this.articleInvoiceEntryTaxService.softDelete(taxEntry.id);
+    // 1. Récupérer l'entrée existante avec verrouillage
+    const existingEntry = await this.articleInvoiceEntryRepository.findOne({
+      where: { id },
+      relations: ['article', 'expenseArticleInvoiceEntryTaxes'],
+      lock: { mode: "pessimistic_write" }
+    });
+  
+    if (!existingEntry) {
+      throw new NotFoundException('Article entry not found');
     }
-
-    //save and check of articles existance , if a given article doesn't exist by name , it will be created
-    let article: ResponseArticleDto;
-    try {
-      article = await this.articleService.findOneByCondition({
-        filter: `title||$eq||${updateArticleInvoiceEntryDto.article.title}`,
-      });
-    } catch (error) {
-      article = await this.articleService.save(
-        updateArticleInvoiceEntryDto.article,
+  
+    if (!existingEntry.article) {
+      throw new NotFoundException('Associated article not found');
+    }
+  
+    // 2. Calculer la différence de quantité CORRECTEMENT
+    const oldQuantity = existingEntry.quantity;
+    const newQuantity = updateDto.quantity;
+    const quantityDifference = newQuantity - oldQuantity;
+  
+    // 3. Vérifier le stock avant mise à jour
+    const currentStock = existingEntry.article.quantityInStock;
+    const newStock = currentStock - quantityDifference;
+  
+    if (newStock < 0) {
+      throw new BadRequestException(
+        `Stock insuffisant. Stock actuel: ${currentStock}, ` +
+        `Quantité demandée: ${quantityDifference}`
       );
     }
-
-    const lineItem = {
-      quantity: updateArticleInvoiceEntryDto.quantity,
-      unit_price: updateArticleInvoiceEntryDto.unit_price,
-      discount: updateArticleInvoiceEntryDto.discount,
-      discount_type: updateArticleInvoiceEntryDto.discount_type,
-      taxes: taxes,
+  
+    // 4. Mettre à jour les taxes
+    await this.handleTaxesUpdate(existingEntry, updateDto.taxes || []);
+  
+    // 5. Préparer les données de l'article
+    const articleUpdateData = {
+      title: updateDto.article?.title ?? existingEntry.article.title,
+      description: updateDto.article?.description ?? existingEntry.article.description,
+      reference: updateDto.article?.reference ?? existingEntry.article.reference,
+      status: updateDto.article?.status ?? existingEntry.article.status,
+      notes: updateDto.article?.notes ?? existingEntry.article.notes,
+      unitPrice: updateDto.unit_price ?? existingEntry.article.unitPrice,
+      quantityInStock: newStock // Utiliser le nouveau stock calculé
     };
-
-    //update the entry with the new data and save it
-    const entry = await this.articleInvoiceEntryRepository.save({
+  
+    // 6. Mettre à jour l'article
+    const article = await this.articleService.update(
+      existingEntry.article.id,
+      articleUpdateData
+    );
+  
+    // 7. Calculer les nouveaux montants
+    const lineItem = await this.calculateLineItem({
+      ...updateDto,
+      quantity: newQuantity
+    }, article);
+  
+    // 8. Mettre à jour l'entrée de facture
+    const updatedEntry = await this.articleInvoiceEntryRepository.save({
       ...existingEntry,
-      ...updateArticleInvoiceEntryDto,
+      ...updateDto,
+      quantity: newQuantity,
       articleId: article.id,
       article: article,
-      subTotal: this.calculationsService.calculateSubTotalForLineItem(lineItem),
-      total: this.calculationsService.calculateTotalForLineItem(lineItem),
+      subTotal: lineItem.subTotal,
+      total: lineItem.total
     });
-    //save the new tax entries for the article entry
-    await this.articleInvoiceEntryTaxService.saveMany(
-      taxes.map((tax) => {
-        return {
-          taxId: tax.id,
-          articleInvoiceEntryId: entry.id,
-        };
-      }),
+  
+    return updatedEntry;
+  }
+  // Méthodes helpers:
+  
+  private async handleTaxesUpdate(
+    existingEntry: ExpenseArticleInvoiceEntryEntity, 
+    newTaxIds: number[]
+  ) {
+    // Supprimer les anciennes taxes
+    await this.articleInvoiceEntryTaxService.softDeleteMany(
+      existingEntry.expenseArticleInvoiceEntryTaxes.map(t => t.id)
     );
-    return entry;
+  
+    // Ajouter les nouvelles taxes
+    if (newTaxIds.length > 0) {
+      const taxes = await Promise.all(
+        newTaxIds.map(id => this.taxService.findOneById(id))
+      );
+      
+      await this.articleInvoiceEntryTaxService.saveMany(
+        taxes.map(tax => ({
+          taxId: tax.id,
+          articleInvoiceEntryId: existingEntry.id
+        }))
+      );
+    }
+  }
+  
+  
+  private generateRandomReference(): string {
+    return `REF-${Math.floor(100000000 + Math.random() * 900000000)}`;
+  }
+  
+  private async calculateLineItem(
+    dto: ExpenseUpdateArticleInvoiceEntryDto,
+    article: ArticleEntity
+  ) {
+    // Fetch full tax objects if taxes are provided
+    const taxes = dto.taxes && dto.taxes.length > 0 
+      ? await Promise.all(dto.taxes.map(id => this.taxService.findOneById(id)))
+      : [];
+  
+    return {
+      subTotal: this.calculationsService.calculateSubTotalForLineItem({
+        quantity: dto.quantity,
+        unit_price: dto.unit_price,
+        discount: dto.discount,
+        discount_type: dto.discount_type,
+        taxes
+      }),
+      total: this.calculationsService.calculateTotalForLineItem({
+        quantity: dto.quantity,
+        unit_price: dto.unit_price,
+        discount: dto.discount,
+        discount_type: dto.discount_type,
+        taxes
+      })
+    };
   }
 
   async duplicate(

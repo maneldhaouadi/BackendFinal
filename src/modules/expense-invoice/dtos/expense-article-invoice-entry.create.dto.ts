@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsInt, IsNumber, IsOptional } from 'class-validator';
+import { IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
 import { CreateArticleDto } from 'src/modules/article/dtos/article.create.dto';
 
@@ -46,4 +46,15 @@ export class ExpenseCreateArticleInvoiceEntryDto {
   @ApiProperty({ required: false })
   @IsOptional()
   taxes?: number[];
+
+  @ApiProperty({ example: 'IPH15PRO-001' })
+      @IsString()
+      @IsNotEmpty()
+      @Matches(/^[A-Za-z0-9\-_]+$/, { 
+        message: 'Reference can only contain letters, numbers, hyphens and underscores' 
+      })
+      reference: string;
+
+      
+  
 }

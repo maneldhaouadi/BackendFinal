@@ -21,7 +21,7 @@ export class ArticleExpensQuotationEntryTaxService {
       createArticleExpensQuotationEntryTaxDto.taxId,
     );
     const taxEntry = await this.articleExpensQuotationEntryTaxRepository.save({
-      articleExpensQuotationEntryId: createArticleExpensQuotationEntryTaxDto.expenseArticleEntryId,
+      expenseArticleEntryId: createArticleExpensQuotationEntryTaxDto.expenseArticleEntryId,
       tax,
     });
     return taxEntry;
@@ -29,7 +29,7 @@ export class ArticleExpensQuotationEntryTaxService {
 
   // Fonction pour sauvegarder plusieurs entrées de taxes
   async saveMany(
-    createArticleExpensQuotationEntryTaxDtos: CreateArticleExpensQuotationEntryTaxDto[],
+createArticleExpensQuotationEntryTaxDtos: CreateArticleExpensQuotationEntryTaxDto[],
   ): Promise<ArticleExpensQuotationEntryTaxEntity[]> {
     const savedEntries = [];
     for (const dto of createArticleExpensQuotationEntryTaxDtos) {

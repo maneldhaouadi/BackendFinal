@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, HttpException, HttpStatus, Injectable, NotFoundException, StreamableFile } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Injectable, InternalServerErrorException, NotFoundException, StreamableFile } from '@nestjs/common';
 import { ExpensQuotationEntity } from '../repositories/entities/expensquotation.entity';
 import { QuotationNotFoundException } from '../errors/quotation.notfound.error';
 import { ResponseExpensQuotationDto } from '../dtos/expensquotation.response.dto';
@@ -12,7 +12,7 @@ import { FirmService } from 'src/modules/firm/services/firm.service';
 import { InterlocutorService } from 'src/modules/interlocutor/services/interlocutor.service';
 import { InvoicingCalculationsService } from 'src/common/calculations/services/invoicing.calculations.service';
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
-import { FindManyOptions, FindOneOptions } from 'typeorm';
+import { EntityManager, FindManyOptions, FindOneOptions, IsNull, Not } from 'typeorm';
 import { ArticleExpensQuotationEntryService } from './article-expensquotation-entry.service';
 import { ArticleExpensQuotationEntryEntity } from '../repositories/entities/article-expensquotation-entry.entity';
 import { PdfService } from 'src/common/pdf/services/pdf.service';
@@ -33,6 +33,11 @@ import { ExpensQuotationUploadEntity } from '../repositories/entities/expensquot
 import { TemplateService } from 'src/modules/template/services/template.service';
 import { TemplateType } from 'src/modules/template/enums/TemplateType';
 import ejs from "ejs";
+import { CreateArticleExpensQuotationEntryDto } from '../dtos/article-expensquotation-entry.create.dto';
+import { ArticleStatus } from 'src/modules/article/interfaces/article-data.interface';
+import { en } from '@faker-js/faker';
+import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
+import { ArticleService } from 'src/modules/article/services/article.service';
 
 
 
@@ -52,6 +57,8 @@ export class ExpensQuotationService {
     private readonly taxService: TaxService,
     private readonly storageService: StorageService,
     private readonly templateService:TemplateService,
+    private readonly entityManager:EntityManager,
+    private articleService:ArticleService,
     
 
     //abstract services
@@ -475,164 +482,237 @@ async save(createQuotationDto: CreateExpensQuotationDto): Promise<ExpensQuotatio
     });
   }
 
-
-  @Transactional()
-async update(
-  id: number,
-  updateQuotationDto: UpdateExpensQuotationDto,
+  async update(
+    id: number,
+    updateQuotationDto: UpdateExpensQuotationDto
 ): Promise<ExpensQuotationEntity> {
-  // Récupérer l'ancienne quotation avec ses relations
-  const existingQuotation = await this.findOneByCondition({
-    filter: `id||$eq||${id}`,
-    join: 'expensearticleQuotationEntries,expensequotationMetaData,uploads,uploadPdfField',
-  });
+    return this.entityManager.transaction(async (transactionalEntityManager) => {
+        // 1. Récupérer la quotation existante avec toutes les relations
+        const existingQuotation = await transactionalEntityManager.findOne(
+            ExpensQuotationEntity,
+            {
+                where: { id },
+                relations: [
+                    'expensearticleQuotationEntries',
+                    'expensearticleQuotationEntries.article',
+                    'expensequotationMetaData',
+                    'uploads',
+                    'uploadPdfField'
+                ]
+            }
+        );
 
-  if (!existingQuotation) {
-    throw new Error("Quotation not found");
-  }
+        if (!existingQuotation) {
+            throw new NotFoundException("Quotation not found");
+        }
 
-  // Récupérer et valider les entités associées en parallèle
-  const [firm, bankAccount, currency, interlocutor] = await Promise.all([
-    this.firmService.findOneByCondition({
-      filter: `id||$eq||${updateQuotationDto.firmId}`,
-    }),
-    updateQuotationDto.bankAccountId
-      ? this.bankAccountService.findOneById(updateQuotationDto.bankAccountId)
-      : null,
-    updateQuotationDto.currencyId
-      ? this.currencyService.findOneById(updateQuotationDto.currencyId)
-      : null,
-    updateQuotationDto.interlocutorId
-      ? this.interlocutorService.findOneById(updateQuotationDto.interlocutorId)
-      : null,
-  ]);
+        // 2. Valider les références des articles
+        if (updateQuotationDto.articleQuotationEntries) {
+            const references = new Set<string>();
+            for (const entry of updateQuotationDto.articleQuotationEntries) {
+                if (!entry.reference) {
+                    throw new BadRequestException('Article reference is required');
+                }
+                if (references.has(entry.reference)) {
+                    throw new BadRequestException(`Duplicate article reference: ${entry.reference}`);
+                }
+                references.add(entry.reference);
+            }
+        }
 
-  // Supprimer logiquement les anciennes entrées d'article
-  const existingArticles =
-    await this.expensearticleQuotationEntryService.softDeleteMany(
-      existingQuotation.expensearticleQuotationEntries.map((entry) => entry.id),
-    );
+        // 3. Vérifier les entités associées
+        const [firm, bankAccount, currency, interlocutor] = await Promise.all([
+            this.firmService.findOneByCondition({ filter: `id||$eq||${updateQuotationDto.firmId}` }),
+            updateQuotationDto.bankAccountId 
+                ? this.bankAccountService.findOneById(updateQuotationDto.bankAccountId) 
+                : Promise.resolve(null),
+            updateQuotationDto.currencyId 
+                ? this.currencyService.findOneById(updateQuotationDto.currencyId) 
+                : Promise.resolve(null),
+            updateQuotationDto.interlocutorId 
+                ? this.interlocutorService.findOneById(updateQuotationDto.interlocutorId) 
+                : Promise.resolve(null),
+        ]);
 
-  // Sauvegarder les nouvelles entrées d'article
-  const articleEntries = updateQuotationDto.articleQuotationEntries
-    ? await this.expensearticleQuotationEntryService.saveMany(
-        updateQuotationDto.articleQuotationEntries,
-      )
-    : existingArticles;
+        if (!firm) {
+            throw new NotFoundException('Firm not found');
+        }
 
-  // Calculer le sous-total et le total des nouvelles entrées
-  const { subTotal, total } =
-    this.calculationsService.calculateLineItemsTotal(
-      articleEntries.map((entry) => entry.total),
-      articleEntries.map((entry) => entry.subTotal),
-    );
+        // 4. Gestion des entrées d'article
+        let articleEntries: ArticleExpensQuotationEntryEntity[] = [];
+        const entriesToDeleteIds: number[] = [];
 
-  // Appliquer la remise générale
-  const totalAfterGeneralDiscount =
-    this.calculationsService.calculateTotalDiscount(
-      total,
-      updateQuotationDto.discount,
-      updateQuotationDto.discount_type,
-    );
+        if (updateQuotationDto.articleQuotationEntries) {
+            const existingEntries = existingQuotation.expensearticleQuotationEntries || [];
 
-  // Convertir les entrées d'article en éléments de ligne
-  const lineItems =
-    await this.expensearticleQuotationEntryService.findManyAsLineItem(
-      articleEntries.map((entry) => entry.id),
-    );
+            // Identifier les entrées à supprimer
+            entriesToDeleteIds.push(
+                ...existingEntries
+                    .filter(existingEntry => 
+                        !updateQuotationDto.articleQuotationEntries.some(
+                            newEntry => newEntry.id === existingEntry.id
+                        )
+                    )
+                    .map(entry => entry.id)
+            );
 
-  // Calculer le résumé des taxes
-  const taxSummary = await Promise.all(
-    this.calculationsService
-      .calculateTaxSummary(lineItems)
-      .map(async (item) => {
-        const tax = await this.taxService.findOneById(item.taxId);
-        return {
-          ...item,
-          label: tax.label,
-          rate: tax.isRate ? tax.value * 100 : tax.value,
-          isRate: tax.isRate,
-        };
-      }),
-  );
+            // Traiter chaque entrée
+            articleEntries = await Promise.all(
+                updateQuotationDto.articleQuotationEntries.map(async entry => {
+                    // Trouver l'entrée existante correspondante
+                    const existingEntry = existingEntries.find(e => e.id === entry.id);
 
-  // Sauvegarder ou mettre à jour les métadonnées de la quotation
-  const expensequotationMetaData = await this.expensequotationMetaDataService.save({
-    ...existingQuotation.expensequotationMetaData,
-    ...updateQuotationDto.expensequotationMetaData,
-    taxSummary,
-  });
+                    if (existingEntry) {
+                        // Mise à jour d'une entrée existante
+                        return this.expensearticleQuotationEntryService.update(
+                            existingEntry.id,
+                            {
+                                ...entry,
+                                expenseQuotationId: id,
+                                // Conserver l'articleId existant s'il n'est pas fourni
+                                articleId: entry.articleId ?? existingEntry.articleId
+                            }
+                        );
+                    } else {
+                        // Création d'une nouvelle entrée
+                        const articleTitle = entry.title || entry.article?.title;
+                        if (!articleTitle) {
+                            throw new BadRequestException(
+                                'Article title is required for new entries (provide either title or article.title)'
+                            );
+                        }
 
-  // Récupérer ou conserver le numéro séquentiel
-  const sequentialNumbr = updateQuotationDto.sequentialNumbr || existingQuotation.sequential;
+                        // Chercher d'abord l'article par référence
+                        let article = await this.articleService.findOneByReference(entry.reference);
 
-  // Vérifier le format du numéro séquentiel
-  if (sequentialNumbr && !/^QUO-\d+$/.test(sequentialNumbr)) {
-    throw new Error('Invalid quotation number format. Expected format: QUO-XXXX');
-  }
+                        if (!article) {
+                            // Créer un nouvel article si non trouvé
+                            article = await this.articleService.save({
+                                title: articleTitle,
+                                description: entry.description || entry.article?.description || '',
+                                reference: entry.reference,
+                                unitPrice: entry.unit_price || 0,
+                                quantityInStock: entry.quantity || 0,
+                                status: 'draft'
+                            });
+                        }
 
-  // ✅ Gestion du fichier PDF
-  let pdfFileId = existingQuotation.pdfFileId; // Conserver l'ID existant par défaut
+                        // Créer la nouvelle entrée de devis
+                        return this.expensearticleQuotationEntryService.save({
+                            ...entry,
+                            expenseQuotationId: id,
+                            articleId: article.id
+                        });
+                    }
+                })
+            );
+        }
 
-  // Seulement mettre à jour si un nouveau PDF est explicitement fourni
-  if (updateQuotationDto.pdfFileId && updateQuotationDto.pdfFileId !== existingQuotation.pdfFileId) {
-    // Supprimer l'ancien fichier si il existe et est différent du nouveau
-    if (existingQuotation.pdfFileId) {
-      await this.storageService.delete(existingQuotation.pdfFileId);
-    }
-    pdfFileId = updateQuotationDto.pdfFileId;
-  }
+        // 5. Supprimer les entrées marquées pour suppression
+        if (entriesToDeleteIds.length > 0) {
+            await this.expensearticleQuotationEntryService.softDeleteMany(entriesToDeleteIds);
+        }
 
-  // Gestion des fichiers uploadés - NOUVELLE APPROCHE
-  let uploads: ExpensQuotationUploadEntity[] = [...existingQuotation.uploads || []];
-  
-  if (updateQuotationDto.uploads) {
-    // 1. Extraire les uploadIds de la requête
-    const requestedUploadIds = updateQuotationDto.uploads.map(u => u.uploadId);
-    
-    // 2. Identifier les uploads existants à conserver
-    uploads = uploads.filter(upload => requestedUploadIds.includes(upload.uploadId));
-    
-    // 3. Identifier les nouveaux uploads à ajouter
-    const existingUploadIds = uploads.map(u => u.uploadId);
-    const uploadsToAdd = updateQuotationDto.uploads
-      .filter(u => !existingUploadIds.includes(u.uploadId))
-      .map(u => ({ 
-        expensequotationId: id, 
-        uploadId: u.uploadId 
-      }));
-    
-    // 4. Ajouter les nouveaux uploads
-    // Correction dans la fonction update
-if (uploadsToAdd.length > 0) {
-  const uploadIdsToAdd = uploadsToAdd.map(u => u.uploadId);
-  await this.expensequotationUploadService.saveMany(id, uploadIdsToAdd);
-  
-  // Récupérer les nouveaux uploads créés
-  const newUploads = await this.expensequotationUploadService.findByUploadIds(uploadIdsToAdd);
-  uploads.push(...newUploads);
+        // 6. Calculer les totaux
+        const { subTotal, total } = this.calculationsService.calculateLineItemsTotal(
+            articleEntries.map(entry => entry.total),
+            articleEntries.map(entry => entry.subTotal)
+        );
+
+        const totalAfterGeneralDiscount = this.calculationsService.calculateTotalDiscount(
+            total,
+            updateQuotationDto.discount,
+            updateQuotationDto.discount_type,
+        );
+
+        // 7. Gestion du résumé des taxes
+        let taxSummary = [];
+        if (articleEntries.length > 0) {
+            const lineItems = await this.expensearticleQuotationEntryService.findManyAsLineItem(
+                articleEntries.map(entry => entry.id)
+            );
+            
+            taxSummary = await Promise.all(
+                this.calculationsService.calculateTaxSummary(lineItems).map(async item => {
+                    const tax = await this.taxService.findOneById(item.taxId);
+                    return {
+                        ...item,
+                        label: tax?.label || 'Unknown',
+                        rate: tax?.isRate ? tax.value * 100 : tax?.value || 0,
+                        isRate: tax?.isRate || false
+                    };
+                })
+            );
+        }
+
+        // 8. Mettre à jour les métadonnées
+        const expensequotationMetaData = await this.expensequotationMetaDataService.save({
+            ...existingQuotation.expensequotationMetaData,
+            ...updateQuotationDto.expensequotationMetaData,
+            taxSummary
+        });
+
+        // 9. Valider le format du numéro séquentiel
+        const sequentialNumbr = updateQuotationDto.sequentialNumbr || existingQuotation.sequential;
+        if (sequentialNumbr && !/^QUO-\d+$/.test(sequentialNumbr)) {
+            throw new BadRequestException('Invalid quotation number format. Expected format: QUO-XXXX');
+        }
+
+        // 10. Gestion du fichier PDF
+        let pdfFileId = existingQuotation.pdfFileId;
+        if (updateQuotationDto.pdfFileId && updateQuotationDto.pdfFileId !== existingQuotation.pdfFileId) {
+            if (existingQuotation.pdfFileId) {
+                await this.storageService.delete(existingQuotation.pdfFileId);
+            }
+            pdfFileId = updateQuotationDto.pdfFileId;
+        }
+
+        // 11. Gestion des fichiers uploadés
+        let uploads: ExpensQuotationUploadEntity[] = [...(existingQuotation.uploads || [])];
+        if (updateQuotationDto.uploads) {
+            uploads = uploads.filter(upload => 
+                updateQuotationDto.uploads.some(u => u.uploadId === upload.uploadId)
+            );
+
+            const newUploadDtos = updateQuotationDto.uploads.filter(
+                u => !uploads.some(existing => existing.uploadId === u.uploadId)
+            );
+
+            if (newUploadDtos.length > 0) {
+                const newUploads = await Promise.all(
+                    newUploadDtos.map(uploadDto => 
+                        this.expensequotationUploadService.create({
+                            expensequotationId: id,
+                            uploadId: uploadDto.uploadId
+                        })
+                    )
+                );
+                uploads.push(...newUploads);
+            }
+        }
+
+        // 12. Sauvegarder la quotation mise à jour
+        const updatedQuotation = await transactionalEntityManager.save(
+            ExpensQuotationEntity,
+            {
+                ...existingQuotation,
+                ...updateQuotationDto,
+                sequential: sequentialNumbr,
+                bankAccountId: bankAccount?.id ?? null,
+                currencyId: currency?.id ?? firm.currencyId,
+                interlocutorId: interlocutor?.id ?? null,
+                expensearticleQuotationEntries: articleEntries,
+                expensequotationMetaData,
+                subTotal,
+                total: totalAfterGeneralDiscount,
+                pdfFileId,
+                uploads
+            }
+        );
+
+        return updatedQuotation;
+    });
 }
-  }
-
-  // Sauvegarder et retourner la quotation mise à jour
-  const updatedQuotation = await this.expensequotationRepository.save({
-    ...existingQuotation,
-    ...updateQuotationDto,
-    sequential: sequentialNumbr,
-    bankAccountId: bankAccount ? bankAccount.id : null,
-    currencyId: currency ? currency.id : firm.currencyId,
-    interlocutorId: interlocutor ? interlocutor.id : null,
-    expensearticleQuotationEntries: articleEntries,
-    expensequotationMetaData,
-    subTotal,
-    total: totalAfterGeneralDiscount,
-    pdfFileId,
-    uploads, // Liste mise à jour des uploads
-  });
-
-  return updatedQuotation;
-}
-
 async updateExpenseQuotationUpload(
   id: number,
   updateQuotationDto: UpdateExpensQuotationDto,
@@ -829,14 +909,20 @@ async updateQuotationStatusIfExpired(quotationId: number): Promise<ExpensQuotati
 
 
   async checkSequentialNumberExists(sequentialNumber: string): Promise<boolean> {
-    if (!sequentialNumber) return false;
-    
+    // Vérification du format
+    if (!/^QUO-\d+$/.test(sequentialNumber)) {
+        throw new BadRequestException('Format de numéro séquentiel invalide. Format attendu: QUO-XXXX');
+    }
+
+    // Recherche dans la base de données
     const existingQuotation = await this.expensequotationRepository.findOne({
-      where: { sequential: sequentialNumber }
+        where: { sequential: sequentialNumber }
     });
-    
+
     return !!existingQuotation;
-  }
+}
+
+ 
 
   async generateQuotationPdf(quotationId: number, templateId?: number): Promise<Buffer> {
     // 1. Récupérer le devis avec toutes les relations nécessaires

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNumber, IsOptional, IsInt } from 'class-validator';
+import { IsEnum, IsNumber, IsOptional, IsInt, IsString, Matches, IsNotEmpty } from 'class-validator';
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
 import { CreateArticleDto } from 'src/modules/article/dtos/article.create.dto';
 
@@ -38,9 +38,8 @@ export class CreateArticleExpensQuotationEntryDto {
   @IsNumber()
   total?: number;
 
-  @ApiProperty({ example: 1, type: Number, required: false })
+  @ApiProperty({ type: CreateArticleDto, required: false })
   @IsOptional()
-  @IsInt()
   article?: CreateArticleDto;
 
   @ApiProperty({ example: 1, type: Number, required: false })
@@ -66,4 +65,42 @@ export class CreateArticleExpensQuotationEntryDto {
   @IsOptional()
   @IsNumber()
   originalStock?: number;
-}
+
+  @ApiProperty({ example: 'IPH15PRO-001' })
+    @IsString()
+    @IsNotEmpty()
+    @Matches(/^[A-Za-z0-9\-_]+$/, { 
+      message: 'Reference can only contain letters, numbers, hyphens and underscores' 
+    })
+    reference: string;
+
+
+    @ApiProperty()
+    id?: number;
+    @ApiProperty({
+      description: 'Titre à utiliser si aucun articleId fourni',
+      required: false
+    })
+    @IsOptional()
+    @IsString()
+    title?: string;
+  
+    @ApiProperty({
+      description: 'Description à utiliser si aucun articleId fourni',
+      required: false
+    })
+    @IsOptional()
+    @IsString()
+    description?: string;
+
+
+   
+    
+
+    
+
+  }
+
+
+
+
