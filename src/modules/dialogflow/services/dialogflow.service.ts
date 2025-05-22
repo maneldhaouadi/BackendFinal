@@ -79,7 +79,11 @@ export class DialogflowService {
         invalidDocumentType: 'Invalid document type. Please provide an invoice (INV-) or quotation (QUO-).',
         documentNotFound: 'Document {reference} not found.',
         fieldNotFound: 'Field {field} not found in document.',
-        comparisonError: 'An error occurred during comparison.'
+        comparisonError: 'An error occurred during comparison.',
+        invalidQuotationFormat: 'Invalid quotation number format. Please use QUO-XXXXXX format (6 digits).',
+      quotationNumberExists: 'Quotation number {number} already exists. Please enter a different number.',
+      dueDateBeforeDateError: 'Due date must always be after the creation date.'
+
       },
       fr: {
         quotation: 'devis',
@@ -102,7 +106,10 @@ export class DialogflowService {
         invalidDocumentType: 'Type de document invalide. Veuillez fournir une facture (INV-) ou un devis (QUO-).',
         documentNotFound: 'Document {reference} introuvable.',
         fieldNotFound: 'Champ {field} introuvable dans le document.',
-        comparisonError: 'Une erreur est survenue lors de la comparaison.'
+        comparisonError: 'Une erreur est survenue lors de la comparaison.',
+        invalidQuotationFormat: 'Format de numéro de devis invalide. Veuillez utiliser le format QUO-XXXXXX (6 chiffres).',
+        quotationNumberExists: 'Le numéro de devis {number} existe déjà. Veuillez entrer un numéro différent.',
+      dueDateBeforeDateError: 'La date d\'échéance doit toujours être postérieure à la date de création.'
       },
       es: {
         quotation: 'presupuesto',
@@ -125,7 +132,10 @@ export class DialogflowService {
         invalidDocumentType: 'Tipo de documento inválido. Proporcione una factura (INV-) o presupuesto (QUO-).',
         documentNotFound: 'Documento {reference} no encontrado.',
         fieldNotFound: 'Campo {field} no encontrado en el documento.',
-        comparisonError: 'Se produjo un error durante la comparación.'
+        comparisonError: 'Se produjo un error durante la comparación.',
+        invalidQuotationFormat: 'Formato de número de presupuesto inválido. Por favor use el formato QUO-XXXXXX (6 dígitos).',
+      quotationNumberExists: 'El número de presupuesto {number} ya existe. Por favor ingrese un número diferente.',
+       dueDateBeforeDateError: 'La fecha de vencimiento debe ser siempre posterior a la fecha de creación.'
       }
     };
     
@@ -170,6 +180,15 @@ export class DialogflowService {
     const invoiceNumber = this.extractInvoiceNumber(queryText);
     const quotationNumber = this.extractQuotationNumber(queryText);
   
+    if (quotationNumber && !this.isValidQuotationFormat(quotationNumber)) {
+      const errorMessage = t('invalidQuotationFormat');
+      await this.saveToHistory(sessionId, queryText, errorMessage);
+      return {
+        fulfillmentText: errorMessage,
+        outputContexts: []
+      };
+    }
+
     // 3. Détection des comparaisons - PRIORITAIRE
     if (this.isComparisonRequest(queryText)) {
       const comparisonParams = {
@@ -460,6 +479,7 @@ private async addArticleToQuotation(
     discount?: number;
     discount_type?: DISCOUNT_TYPES;
     unit_price?: number;
+    reference?: string; // Ajout du paramètre optionnel pour la référence
   },
   lang: string = 'fr'
 ): Promise<{ success: boolean; message: string; articleId?: number }> {
@@ -470,9 +490,10 @@ private async addArticleToQuotation(
   await queryRunner.startTransaction();
 
   try {
-    // 1. Vérification/création de l'article avec le repository standard
+    // 1. Vérification/création de l'article
     let article = await this.articleRepository.findOne({ 
-      where: { id: params.articleId }
+      where: { id: params.articleId },
+      select: ['id', 'title', 'unitPrice', 'quantityInStock', 'status', 'version', 'reference']
     });
 
     if (!article) {
@@ -483,29 +504,40 @@ private async addArticleToQuotation(
         unitPrice: params.unit_price || 100,
         quantityInStock: 0,
         status: 'active',
-        version: 1
+        version: 1,
+        reference: `REF-${params.articleId.toString().padStart(6, '0')}`
       });
       article = await this.articleRepository.save(article);
     }
 
-    // 2. Création de l'entrée avec le repository spécifique
+    // Calcul des montants
+    const unitPrice = params.unit_price || article.unitPrice;
+    const discount = params.discount || 0;
+    const discountType = params.discount_type || DISCOUNT_TYPES.PERCENTAGE;
+    
+    const subTotal = unitPrice * params.quantity;
+    const discountAmount = discountType === DISCOUNT_TYPES.AMOUNT 
+      ? discount 
+      : subTotal * (discount / 100);
+    const total = subTotal - discountAmount;
+
+    // 2. Création de l'entrée avec référence
     const articleEntry = this.articleEntryRepository.create({
       article: article,
       quantity: params.quantity,
-      unit_price: params.unit_price,
-      discount: params.discount || 0,
-      discount_type: params.discount_type || DISCOUNT_TYPES.PERCENTAGE,
-      subTotal: (params.unit_price) * params.quantity,
-      total: (params.unit_price) * params.quantity * 
-             (1 - (params.discount_type === DISCOUNT_TYPES.AMOUNT ? 
-                  (params.discount || 0) / ((params.unit_price) * params.quantity) : 
-                  (params.discount || 0) / 100)
-    )});
+      unit_price: unitPrice,
+      discount: discount,
+      discount_type: discountType,
+      subTotal: subTotal,
+      total: total,
+      reference: params.reference || this.generateReference(), // Utilise la référence fournie ou en génère une
+    });
 
     // 3. Lien avec le devis si nécessaire
     if (params.quotationNumber) {
       const quotation = await this.expensQuotationRepository.findOne({
-        where: { sequentialNumbr: params.quotationNumber }
+        where: { sequentialNumbr: params.quotationNumber },
+        select: ['id', 'subTotal', 'total']
       });
       
       if (quotation) {
@@ -521,10 +553,10 @@ private async addArticleToQuotation(
     await this.articleEntryRepository.save(articleEntry);
     await queryRunner.commitTransaction();
 
-    // Vérification immédiate en base
+    // Vérification
     const exists = await this.articleEntryRepository.findOne({
-      where: { article: { id: article.id } },
-      relations: ['article']
+      where: { id: articleEntry.id },
+      relations: ['article', 'expenseQuotation']
     });
 
     if (!exists) {
@@ -534,8 +566,8 @@ private async addArticleToQuotation(
     return {
       success: true,
       message: lang === 'fr'
-        ? `Article "${article.title}" (ID:${article.id}) ajouté avec succès`
-        : `Article "${article.title}" (ID:${article.id}) added successfully`,
+        ? `Article "${article.title}" (ID:${article.id}) ajouté avec succès. Référence: ${articleEntry.reference}`
+        : `Article "${article.title}" (ID:${article.id}) added successfully. Reference: ${articleEntry.reference}`,
       articleId: article.id
     };
 
@@ -555,12 +587,18 @@ private async addArticleToQuotation(
   }
 }
 
+// Méthode pour générer la référence au format REF-193286-873
+private generateReference(): string {
+  const part1 = Math.floor(100000 + Math.random() * 900000); // 6 chiffres aléatoires
+  const part2 = Math.floor(100 + Math.random() * 900);       // 3 chiffres aléatoires
+  return `REF-${part1}-${part2}`;
+}
+
 private mapStatusStringToEnum(statusString?: string): EXPENSQUOTATION_STATUS {
   if (!statusString) return EXPENSQUOTATION_STATUS.Draft;
   
   const statusMap = {
     'expense_quotation.status.draft': EXPENSQUOTATION_STATUS.Draft,
-    'expense_quotation.status.validated': EXPENSQUOTATION_STATUS.Validated,
     'expense_quotation.status.expired': EXPENSQUOTATION_STATUS.Expired
   };
 
@@ -584,6 +622,16 @@ private async handleQuotationStatus(
 ): Promise<any> {
   const t = this.getTranslation(lang);
   
+  // Validation stricte du format avant traitement
+  if (!this.isValidQuotationFormat(quotationNumber)) {
+    const errorMessage = t('invalidQuotationFormat');
+    await this.saveToHistory(sessionId, `Status request for ${quotationNumber}`, errorMessage);
+    return {
+      fulfillmentText: errorMessage,
+      outputContexts: []
+    };
+  }
+
   try {
     const quotationStatus = await this.getQuotationStatus(quotationNumber);
     
@@ -592,7 +640,7 @@ private async handleQuotationStatus(
         fulfillmentText: t.notFound(t.quotation, quotationNumber),
         outputContexts: []
       };
-      this.saveToHistory(sessionId, `What is the status of quotation ${quotationNumber}`, response.fulfillmentText);
+      await this.saveToHistory(sessionId, `Status request for ${quotationNumber}`, response.fulfillmentText);
       return response;
     }
 
@@ -618,9 +666,7 @@ private async handleQuotationStatus(
       }]
     };
 
-    // Sauvegarder dans l'historique
-    this.saveToHistory(sessionId, `What is the status of quotation ${quotationNumber}`, fulfillmentText);
-    
+    await this.saveToHistory(sessionId, `Status request for ${quotationNumber}`, fulfillmentText);
     return response;
   } catch (error) {
     console.error('Error handling quotation status:', error);
@@ -628,28 +674,22 @@ private async handleQuotationStatus(
       fulfillmentText: t.error,
       outputContexts: []
     };
-    this.saveToHistory(sessionId, `What is the status of quotation ${quotationNumber}`, response.fulfillmentText);
+    await this.saveToHistory(sessionId, `Status request for ${quotationNumber}`, response.fulfillmentText);
     return response;
   }
 }
   
-  private extractQuotationNumber(text: string): string | null {
-    const patterns = [
-      /(?:quotation|devis|presupuesto)\s+(QUO-\d{4})/i,
-      /(?:numero|num|#)\s+(QUO-\d{4})/i,
-      /(?:status|statut|estado)\s+(?:of|pour|de)\s+(QUO-\d{4})/i,
-      /^(QUO-\d{4})$/i
-    ];
-  
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        return match[1].toUpperCase();
-      }
-    }
-    return null;
-  }
+private extractQuotationNumber(text: string): string | null {
+  // Pattern strict pour QUO- suivi de 6 chiffres exactement
+  const strictPattern = /(?:quotation|devis|presupuesto)\s+(QUO-\d{6})\b/i;
+  const match = text.match(strictPattern);
+  return match ? match[1].toUpperCase() : null;
+}
 
+private isValidQuotationFormat(quotationNumber: string): boolean {
+  // Vérifie que le numéro commence par QUO- suivi de exactement 6 chiffres
+  return /^QUO-\d{6}$/i.test(quotationNumber);
+}
  
 
   private extractInvoiceNumber(text: string): string | null {
@@ -727,6 +767,11 @@ private async handleQuotationStatus(
       articleCount?: number;
     }
   } | null> {
+
+    if (!this.isValidQuotationFormat(sequentialNumber)) {
+      throw new Error(this.getTranslation('en').invalidQuotationFormat);
+    }
+    
     try {
         const quotation = await this.expensQuotationRepository
             .createQueryBuilder('quotation')
@@ -756,24 +801,18 @@ private async handleQuotationStatus(
   public getQuotationStatusMessage(status: EXPENSQUOTATION_STATUS, lang: string = 'en'): string {
     const translations = {
         en: {
-            [EXPENSQUOTATION_STATUS.Nonexistent]: 'Non Existent',
             [EXPENSQUOTATION_STATUS.Expired]: 'Expired',
             [EXPENSQUOTATION_STATUS.Draft]: 'Draft',
-            [EXPENSQUOTATION_STATUS.Validated]: 'Validated',
             unknown: 'Unknown Status'
         },
         fr: {
-            [EXPENSQUOTATION_STATUS.Nonexistent]: 'Inexistant',
             [EXPENSQUOTATION_STATUS.Expired]: 'Expiré',
             [EXPENSQUOTATION_STATUS.Draft]: 'Brouillon',
-            [EXPENSQUOTATION_STATUS.Validated]: 'Validé',
             unknown: 'Statut inconnu'
         },
         es: {
-            [EXPENSQUOTATION_STATUS.Nonexistent]: 'Inexistente',
             [EXPENSQUOTATION_STATUS.Expired]: 'Expirado',
             [EXPENSQUOTATION_STATUS.Draft]: 'Borrador',
-            [EXPENSQUOTATION_STATUS.Validated]: 'Validado',
             unknown: 'Estado desconocido'
         }
     };
@@ -817,7 +856,6 @@ private async handleQuotationStatus(
   public getInvoiceStatusMessage(status: EXPENSE_INVOICE_STATUS, lang: string = 'en'): string {
     const statusMap = {
       en: {
-        [EXPENSE_INVOICE_STATUS.Nonexistent]: 'Non Existent',
         [EXPENSE_INVOICE_STATUS.Draft]: 'Draft',
         [EXPENSE_INVOICE_STATUS.Validated]: 'Validated',
         [EXPENSE_INVOICE_STATUS.Paid]: 'Paid',
@@ -826,7 +864,6 @@ private async handleQuotationStatus(
         [EXPENSE_INVOICE_STATUS.Expired]: 'Expired',
       },
       fr: {
-        [EXPENSE_INVOICE_STATUS.Nonexistent]: 'Inexistant',
         [EXPENSE_INVOICE_STATUS.Draft]: 'Brouillon',
         [EXPENSE_INVOICE_STATUS.Validated]: 'Validé',
         [EXPENSE_INVOICE_STATUS.Paid]: 'Payé',
@@ -835,7 +872,6 @@ private async handleQuotationStatus(
         [EXPENSE_INVOICE_STATUS.Expired]: 'Expiré',
       },
       es: {
-        [EXPENSE_INVOICE_STATUS.Nonexistent]: 'Inexistente',
         [EXPENSE_INVOICE_STATUS.Draft]: 'Borrador',
         [EXPENSE_INVOICE_STATUS.Validated]: 'Validado',
         [EXPENSE_INVOICE_STATUS.Paid]: 'Pagado',
@@ -888,15 +924,15 @@ private async handleQuotationStatus(
       dueDate?: Date | string;       
       notes?: string;
       date?: Date | string;
-       discount?: number;
+      discount?: number;
       discount_type?: DISCOUNT_TYPES;
       taxStamp?: number;
       expenseMetaDataId?: number;
       isDeletionRestricted?: boolean;
     },
     lang: string = 'fr',
-    sessionId?: string,  // Ajoutez ce paramètre optionnel
-    userQuery?: string   // Ajoutez ce paramètre optionnel
+    sessionId?: string,
+    userQuery?: string
   ) {
     const t = this.getTranslation(lang);
     const queryRunner = this.dataSource.createQueryRunner();
@@ -905,6 +941,20 @@ private async handleQuotationStatus(
     await queryRunner.startTransaction();
   
     try {
+      if (params.sequentialNumbr) {
+        const existingQuotation = await this.expensQuotationRepository.findOne({
+          where: { sequentialNumbr: params.sequentialNumbr }
+        });
+        
+        if (existingQuotation) {
+          const errorMessage = t.quotationNumberExists.replace('{number}', params.sequentialNumbr);
+          if (sessionId) {
+            await this.saveToHistory(sessionId, userQuery || 'Create quotation request', errorMessage);
+          }
+          throw new Error(errorMessage);
+        }
+      }
+  
       // Validation des champs obligatoires
       if (!params.interlocutorName || !params.articles || params.articles.length === 0) {
         throw new Error(t.missingRequiredFields);
@@ -1001,6 +1051,12 @@ private async handleQuotationStatus(
       quotation.sequential = sequentialNumbr;
       const parsedDate = typeof params.date === 'string' ? new Date(params.date) : params.date;
       const parsedDueDate = typeof params.dueDate === 'string' ? new Date(params.dueDate) : params.dueDate;
+      
+      // Validation de la dueDate
+      if (parsedDueDate && parsedDate && parsedDueDate < parsedDate) {
+        throw new Error(t.dueDateBeforeDateError);
+      }
+  
       // Utilisation des dates converties
       quotation.date = parsedDate ?? new Date();
       quotation.dueDate = parsedDueDate ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -1020,20 +1076,27 @@ private async handleQuotationStatus(
         entry.expenseQuotation = savedQuotation;
         await queryRunner.manager.save(entry);
       }
+      if (params.sequentialNumbr && !this.isValidQuotationFormat(params.sequentialNumbr)) {
+        const errorMessage = t('invalidQuotationFormat');
+        if (sessionId) {
+          await this.saveToHistory(sessionId, userQuery || 'Create quotation request', errorMessage);
+        }
+        throw new Error(errorMessage);
+      }
   
       await queryRunner.commitTransaction();
   
       const successMessage = t.quotationCreated
-  .replace('{{object}}', savedQuotation.object)
-  .replace('{{number}}', savedQuotation.sequentialNumbr)
-  .replace('{{total}}', savedQuotation.total.toFixed(2));
-
-// Sauvegarder dans l'historique
-if (sessionId) {
-  this.saveToHistory(sessionId, userQuery, successMessage);
-}
-
-    return {
+        .replace('{{object}}', savedQuotation.object)
+        .replace('{{number}}', savedQuotation.sequentialNumbr)
+        .replace('{{total}}', savedQuotation.total.toFixed(2));
+  
+      // Sauvegarder dans l'historique
+      if (sessionId) {
+        await this.saveToHistory(sessionId, userQuery || 'Create quotation request', successMessage);
+      }
+  
+      return {
         success: true,
         quotationNumber: savedQuotation.sequentialNumbr,
         total: savedQuotation.total,
@@ -1049,7 +1112,11 @@ if (sessionId) {
   
     } catch (error) {
       await queryRunner.rollbackTransaction();
-      throw new Error(`${t.creationError}: ${error.message}`);
+      const errorMessage = `${t.creationError}: ${error.message}`;
+      if (sessionId) {
+        await this.saveToHistory(sessionId, userQuery || 'Create quotation request', errorMessage);
+      }
+      throw new Error(errorMessage);
     } finally {
       await queryRunner.release();
     }

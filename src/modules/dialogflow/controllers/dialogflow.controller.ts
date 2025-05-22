@@ -565,13 +565,7 @@ private promptForInput(request: any, message: string) {
       }]
   };
 }
-  private extractParamValue(parameters: any, paramName: string): string | null {
-    // Essaye plusieurs formats de paramètres
-    return parameters?.fields?.[paramName]?.stringValue 
-        || parameters?.[paramName]?.stringValue
-        || parameters?.[paramName]
-        || null;
-}
+ 
 
 private extractNumberFromParams(parameters: any, paramName: string): number | null {
   // Essayer différentes variantes de noms de paramètres
@@ -613,9 +607,7 @@ private extractNumberFromParams(parameters: any, paramName: string): number | nu
   private mapStatus(status: string): EXPENSQUOTATION_STATUS {
     const statusMap = {
       'brouillon': EXPENSQUOTATION_STATUS.Draft,
-      'validé': EXPENSQUOTATION_STATUS.Validated,
       'expense_quotation.status.draft': EXPENSQUOTATION_STATUS.Draft,
-      'expense_quotation.status.validated': EXPENSQUOTATION_STATUS.Validated
     };
     return statusMap[status.toLowerCase()] || EXPENSQUOTATION_STATUS.Draft;
   }

@@ -4,7 +4,6 @@ import { TaxService } from 'src/modules/tax/services/tax.service';
 import { ArticleExpensQuotationEntryTaxEntity } from '../repositories/entities/article-expensquotation-entry-tax.entity';
 import { ArticleExpensQuotationEntryTaxRepository } from '../repositories/repository/article-expensquotation-entry-tax.repository';
 import { CreateArticleExpensQuotationEntryTaxDto } from '../dtos/article-expensquotation-entry-tax.create.dto';
-import { CreateArticleExpenseQuotationEntryTaxDto } from '../dtos/article-expensquotation-entry-tax.response.dto';
 
 @Injectable()
 export class ArticleExpensQuotationEntryTaxService {

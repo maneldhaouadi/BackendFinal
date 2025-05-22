@@ -38,17 +38,7 @@ export class ExpensQuotationEntity extends EntityHelper {
     @Column({ type: 'enum', enum: EXPENSQUOTATION_STATUS, nullable: true })
     status: EXPENSQUOTATION_STATUS;
   
-    @Column({ nullable: true })
-    discount: number;
-  
-    @Column({ type: 'enum', enum: DISCOUNT_TYPES, nullable: true })
-    discount_type: DISCOUNT_TYPES;
-  
-    @Column({ type: 'float', nullable: true })
-    subTotal: number;
-  
-    @Column({ type: 'float', nullable: true })
-    total: number;
+    
   
     @ManyToOne(() => CurrencyEntity)
     @JoinColumn({ name: 'currencyId' })
@@ -122,7 +112,26 @@ expensearticleQuotationEntries: ArticleExpensQuotationEntryEntity[];
   @Column({ type: 'int', nullable: true })
   pdfFileId: number;
 
-/*@ManyToOne(() => Template, { nullable: true })
-@JoinColumn({ name: 'template_id' })
-template: Template;*/
+
+  // Dans ExpensQuotationEntity
+@ManyToOne(() => Template, { nullable: true })
+@JoinColumn({ name: "templateId" })
+template: Template;
+
+@Column({ nullable: true })
+templateId: number;
+
+
+
+@Column({ nullable: true })
+    discount: number;
+  
+    @Column({ type: 'enum', enum: DISCOUNT_TYPES, nullable: true })
+    discount_type: DISCOUNT_TYPES;
+  
+    @Column({ type: 'float', nullable: true })
+    subTotal: number;
+  
+    @Column({ type: 'float', nullable: true })
+    total: number;
 }

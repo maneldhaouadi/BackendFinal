@@ -26,17 +26,11 @@ import { ExpensequotationRepository } from '../repositories/repository/expensquo
 import { EXPENSQUOTATION_STATUS } from '../enums/expensquotation-status.enum';
 import { Transactional } from '@nestjs-cls/transactional';
 import { DuplicateExpensQuotationDto } from '../dtos/expensquotation.duplicate.dto';
-import { ExpensQuotationMetaDataEntity } from '../repositories/entities/expensquotation-meta-data.entity';
-import { StorageBadRequestException } from 'src/common/storage/errors/storage.bad-request.error';
 import { StorageService } from 'src/common/storage/services/storage.service';
 import { ExpensQuotationUploadEntity } from '../repositories/entities/expensquotation-file.entity';
 import { TemplateService } from 'src/modules/template/services/template.service';
 import { TemplateType } from 'src/modules/template/enums/TemplateType';
 import ejs from "ejs";
-import { CreateArticleExpensQuotationEntryDto } from '../dtos/article-expensquotation-entry.create.dto';
-import { ArticleStatus } from 'src/modules/article/interfaces/article-data.interface';
-import { en } from '@faker-js/faker';
-import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
 import { ArticleService } from 'src/modules/article/services/article.service';
 
 
@@ -67,6 +61,12 @@ export class ExpensQuotationService {
   ) {}
 
 
+  async getAvailableStatuses(): Promise<{ value: string; label: string }[]> {
+    return Object.entries(EXPENSQUOTATION_STATUS).map(([key, value]) => ({
+      value: key, // La clé de l'enum (ex: 'Draft')
+      label: value // La valeur de traduction (ex: 'expense_quotation.status.draft')
+    }));
+  }
 
   async findOneByCondition(
     query: IQueryObject,
@@ -939,7 +939,8 @@ async updateQuotationStatusIfExpired(quotationId: number): Promise<ExpensQuotati
             'expensequotationMetaData',
             'cabinet',
             'cabinet.address',
-            'bankAccount'
+            'bankAccount',
+            'template' // Ajout de la relation template
         ]
     });
 
@@ -955,6 +956,13 @@ async updateQuotationStatusIfExpired(quotationId: number): Promise<ExpensQuotati
     if (!template) {
         throw new NotFoundException('Aucun template de devis trouvé');
     }
+
+    // 3. Enregistrer l'ID du template utilisé (corrigé)
+    if (template.id !== quotation.templateId) {
+        quotation.template = template; // Utilisez la relation entière
+        await this.expensequotationRepository.save(quotation);
+    }
+
 
     // 3. Calculer les totaux
 

@@ -98,7 +98,8 @@ export class ExpenseInvoiceEntity extends EntityHelper {
   @OneToMany(() =>ExpenseArticleInvoiceEntryEntity, (entry) => entry.expenseInvoice)
   articleExpenseEntries: ExpenseArticleInvoiceEntryEntity[];
 
-  @OneToOne(() => ExpenseInvoiceMetaDataEntity)
+
+   @OneToOne(() => ExpenseInvoiceMetaDataEntity)
   @JoinColumn()
   expenseInvoiceMetaData: ExpenseInvoiceMetaDataEntity;
 

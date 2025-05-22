@@ -11,10 +11,6 @@ export class ArticleExpensQuotationEntryEntity extends EntityHelper {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ name: 'unit_price', type: 'float', nullable: true })
-  unit_price: number;
-  
-
   @Column({ type: 'float', nullable: true })
   quantity: number;
 
@@ -48,16 +44,28 @@ discount_type: DISCOUNT_TYPES;
     (articleQuotationEntryTax) => articleQuotationEntryTax.expenseArticleEntry,
   )
   articleExpensQuotationEntryTaxes: ArticleExpensQuotationEntryTaxEntity[];
+
+  @Column({ length: 50, nullable: true })
+  reference: string;
+
+  @Column({ type: 'int', nullable: true })
+  expenseQuotationId: number; // Ajoutez cette colonne
+
+
+
+
+
+
+
   
-  @Column({ name: 'ordered_quantity', type: 'float', nullable: true })
+
+
+    @Column({ name: 'ordered_quantity', type: 'float', nullable: true })
   orderedQuantity: number; // Nouveau champ pour la quantité commandée
 
   @Column({ name: 'original_stock', type: 'float', nullable: true })
   originalStock: number; // Stock original au moment de la commande
 
-  @Column({ length: 50, nullable: false })
-  reference: string;
-
-  @Column({ type: 'int', nullable: true })
-  expenseQuotationId: number; // Ajoutez cette colonne
+   @Column({ name: 'unit_price', type: 'float', nullable: true })
+  unit_price: number;
 }

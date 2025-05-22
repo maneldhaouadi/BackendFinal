@@ -166,177 +166,117 @@ export class ExpenseArticleInvoiceEntryService {
     id: number,
     updateDto: ExpenseUpdateArticleInvoiceEntryDto,
   ): Promise<ExpenseArticleInvoiceEntryEntity> {
-    // 1. Récupérer l'entrée existante avec verrouillage
+    // 1. Récupérer l'entrée avec l'article
     const existingEntry = await this.articleInvoiceEntryRepository.findOne({
       where: { id },
-      relations: ['article', 'expenseArticleInvoiceEntryTaxes'],
+      relations: ['article'],
       lock: { mode: "pessimistic_write" }
     });
   
-    if (!existingEntry) {
-      throw new NotFoundException('Article entry not found');
+    if (!existingEntry?.article) {
+      throw new NotFoundException('Article entry or associated article not found');
     }
   
-    if (!existingEntry.article) {
-      throw new NotFoundException('Associated article not found');
-    }
-  
-    // 2. Calculer la différence de quantité CORRECTEMENT
-    const oldQuantity = existingEntry.quantity;
-    const newQuantity = updateDto.quantity;
-    const quantityDifference = newQuantity - oldQuantity;
-  
-    // 3. Vérifier le stock avant mise à jour
-    const currentStock = existingEntry.article.quantityInStock;
-    const newStock = currentStock - quantityDifference;
-  
-    if (newStock < 0) {
-      throw new BadRequestException(
-        `Stock insuffisant. Stock actuel: ${currentStock}, ` +
-        `Quantité demandée: ${quantityDifference}`
-      );
-    }
-  
-    // 4. Mettre à jour les taxes
-    await this.handleTaxesUpdate(existingEntry, updateDto.taxes || []);
-  
-    // 5. Préparer les données de l'article
-    const articleUpdateData = {
+    // 2. Mettre à jour TOUTES les propriétés de l'article
+    const articleUpdates: UpdateArticleDto = {
       title: updateDto.article?.title ?? existingEntry.article.title,
       description: updateDto.article?.description ?? existingEntry.article.description,
       reference: updateDto.article?.reference ?? existingEntry.article.reference,
-      status: updateDto.article?.status ?? existingEntry.article.status,
-      notes: updateDto.article?.notes ?? existingEntry.article.notes,
       unitPrice: updateDto.unit_price ?? existingEntry.article.unitPrice,
-      quantityInStock: newStock // Utiliser le nouveau stock calculé
     };
   
-    // 6. Mettre à jour l'article
-    const article = await this.articleService.update(
-      existingEntry.article.id,
-      articleUpdateData
-    );
+    // 3. Sauvegarder l'article d'abord
+    const updatedArticle = await this.articleService.update(existingEntry.article.id, articleUpdates);
   
-    // 7. Calculer les nouveaux montants
-    const lineItem = await this.calculateLineItem({
-      ...updateDto,
-      quantity: newQuantity
-    }, article);
-  
-    // 8. Mettre à jour l'entrée de facture
+    // 4. Mettre à jour l'entrée de facture avec l'article fraîchement mis à jour
     const updatedEntry = await this.articleInvoiceEntryRepository.save({
       ...existingEntry,
-      ...updateDto,
-      quantity: newQuantity,
-      articleId: article.id,
-      article: article,
-      subTotal: lineItem.subTotal,
-      total: lineItem.total
+      quantity: updateDto.quantity ?? existingEntry.quantity,
+      unit_price: updateDto.unit_price ?? existingEntry.unit_price,
+      discount: updateDto.discount ?? existingEntry.discount,
+      discount_type: updateDto.discount_type ?? existingEntry.discount_type,
+      article: updatedArticle // Utilisez l'article mis à jour retourné par le service
     });
   
     return updatedEntry;
   }
-  // Méthodes helpers:
-  
-  private async handleTaxesUpdate(
-    existingEntry: ExpenseArticleInvoiceEntryEntity, 
-    newTaxIds: number[]
-  ) {
-    // Supprimer les anciennes taxes
-    await this.articleInvoiceEntryTaxService.softDeleteMany(
-      existingEntry.expenseArticleInvoiceEntryTaxes.map(t => t.id)
-    );
-  
-    // Ajouter les nouvelles taxes
-    if (newTaxIds.length > 0) {
-      const taxes = await Promise.all(
-        newTaxIds.map(id => this.taxService.findOneById(id))
-      );
-      
-      await this.articleInvoiceEntryTaxService.saveMany(
-        taxes.map(tax => ({
-          taxId: tax.id,
-          articleInvoiceEntryId: existingEntry.id
-        }))
-      );
-    }
-  }
-  
-  
-  private generateRandomReference(): string {
-    return `REF-${Math.floor(100000000 + Math.random() * 900000000)}`;
-  }
-  
-  private async calculateLineItem(
-    dto: ExpenseUpdateArticleInvoiceEntryDto,
-    article: ArticleEntity
-  ) {
-    // Fetch full tax objects if taxes are provided
-    const taxes = dto.taxes && dto.taxes.length > 0 
-      ? await Promise.all(dto.taxes.map(id => this.taxService.findOneById(id)))
-      : [];
-  
-    return {
-      subTotal: this.calculationsService.calculateSubTotalForLineItem({
-        quantity: dto.quantity,
-        unit_price: dto.unit_price,
-        discount: dto.discount,
-        discount_type: dto.discount_type,
-        taxes
-      }),
-      total: this.calculationsService.calculateTotalForLineItem({
-        quantity: dto.quantity,
-        unit_price: dto.unit_price,
-        discount: dto.discount,
-        discount_type: dto.discount_type,
-        taxes
-      })
-    };
-  }
+
 
   async duplicate(
     id: number,
-    invoiceId: number,
+    newInvoiceId: number,
   ): Promise<ExpenseArticleInvoiceEntryEntity> {
-    // Fetch the existing entry with its taxes
-    const existingEntry = await this.findOneByCondition({
-      filter: `id||$eq||${id}`,
-      join: 'expenseArticleInvoiceEntryTaxes',
+    // 1. Récupérer l'entrée existante avec ses relations
+    const existingEntry = await this.articleInvoiceEntryRepository.findOne({
+      where: { id },
+      relations: [
+        'expenseArticleInvoiceEntryTaxes',
+      ],
     });
   
     if (!existingEntry) {
       throw new Error(`Entry with id ${id} not found`);
     }
   
-    // Duplicate the taxes associated with this entry
-    const duplicatedTaxes = existingEntry.articleInvoiceEntryTaxes?.map((taxEntry) => ({
+    // 2. Générer une nouvelle référence unique
+    const generateNewReference = () => {
+      const timestamp = Date.now().toString().slice(-6);
+      const randomNum = Math.floor(100 + Math.random() * 900);
+      return `REF-${timestamp}-${randomNum}`; // Format simplifié
+    };
+  
+    const newReference = generateNewReference();
+  
+    // 3. Créer un nouvel article avec nouvelle référence
+    const newArticle = existingEntry.article 
+      ? {
+          ...existingEntry.article,
+          id: undefined, // Nouvel ID auto-généré
+          reference: newReference, // Nouvelle référence unique
+          createdAt: undefined,
+          updatedAt: undefined,
+        }
+      : null;
+  
+    // 4. Préparer les taxes à dupliquer
+    const duplicatedTaxes = existingEntry.expenseArticleInvoiceEntryTaxes?.map((taxEntry) => ({
       taxId: taxEntry.taxId,
     })) || [];
   
-    // Create the duplicated entry
+    // 5. Créer l'entrée dupliquée
     const duplicatedEntry = this.articleInvoiceEntryRepository.create({
       ...existingEntry,
-      id: undefined, // Remove the existing ID
-      expenseInvoiceId: invoiceId, // Assign the new invoice ID
-      expenseArticleInvoiceEntryTaxes: undefined, // Remove reference to existing taxes
+      id: undefined, // Nouvel ID auto-généré
+      reference: newReference, // Ajout de la nouvelle référence directement sur l'entrée
+      expenseInvoiceId: newInvoiceId, // Assigner le nouvel ID de facture
+      article: newArticle, // Utiliser le nouvel article (peut être null)
+      expenseArticleInvoiceEntryTaxes: undefined, // Réinitialiser les taxes
       createdAt: undefined,
       updatedAt: undefined,
     });
   
-    // Save the duplicated entry
+    // 6. Sauvegarder la nouvelle entrée
     const newEntry = await this.articleInvoiceEntryRepository.save(duplicatedEntry);
   
-    // Save the new tax entries for the duplicated entry
-    await this.articleInvoiceEntryTaxService.saveMany(
-      duplicatedTaxes.map((tax) => ({
-        taxId: tax.taxId,
-        articleInvoiceEntryId: newEntry.id, // Use the new entry's ID
-      })),
-    );
+    // 7. Sauvegarder les taxes associées si elles existent
+    if (duplicatedTaxes.length > 0) {
+      await this.articleInvoiceEntryTaxService.saveMany(
+        duplicatedTaxes.map((tax) => ({
+          taxId: tax.taxId,
+          articleInvoiceEntryId: newEntry.id,
+        })),
+      );
+    }
   
-    return newEntry;
+    // 8. Sauvegarder le nouvel article si nécessaire
+  
+  
+    // 9. Retourner l'entrée complète avec ses relations
+    return this.articleInvoiceEntryRepository.findOne({
+      where: { id: newEntry.id },
+      relations: ['expenseArticleInvoiceEntryTaxes', 'article'],
+    });
   }
-  
   async duplicateMany(
     ids: number[],
     invoiceId: number,

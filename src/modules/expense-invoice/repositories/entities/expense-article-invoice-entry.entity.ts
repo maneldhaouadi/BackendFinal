@@ -60,4 +60,4 @@ export class ExpenseArticleInvoiceEntryEntity extends EntityHelper {
     (expenseArticleInvoiceEntryTax) => expenseArticleInvoiceEntryTax.expenseArticleInvoiceEntry,
   )
   expenseArticleInvoiceEntryTaxes: ExpenseArticleInvoiceEntryTaxEntity[];
-}
+} 

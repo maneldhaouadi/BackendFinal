@@ -1,5 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, DeleteDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, DeleteDateColumn, OneToMany } from 'typeorm';
 import { TemplateType } from '../../enums/TemplateType';
+import { ExpensQuotationEntity } from 'src/modules/expense_quotation/repositories/entities/expensquotation.entity';
 
 @Entity()
 export class Template {
@@ -18,8 +19,10 @@ export class Template {
   @Column({ default: false })
   isDefault: boolean;
 
-  @Column({ nullable: true })
-  sequentialNumber: string;
+
+@OneToMany(() => ExpensQuotationEntity, (devis) => devis.template)
+expenseQuotations: ExpensQuotationEntity[];
+
 
   @CreateDateColumn()
   createdAt: Date;

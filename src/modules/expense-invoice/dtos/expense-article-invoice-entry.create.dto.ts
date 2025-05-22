@@ -54,7 +54,5 @@ export class ExpenseCreateArticleInvoiceEntryDto {
         message: 'Reference can only contain letters, numbers, hyphens and underscores' 
       })
       reference: string;
-
-      
   
 }

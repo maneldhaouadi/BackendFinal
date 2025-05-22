@@ -38,61 +38,91 @@ export class ArticleExpensQuotationEntryService {
         return savedEntries;
     }
 
-    async save(
-        createArticleExpensQuotationEntryDto: CreateArticleExpensQuotationEntryDto,
-    ): Promise<ArticleExpensQuotationEntryEntity> {
-        try {
-            // 1. Vérification de la référence
-            if (!createArticleExpensQuotationEntryDto.reference) {
-                throw new Error('La référence de l\'article est obligatoire');
+   async save(
+    createArticleExpensQuotationEntryDto: CreateArticleExpensQuotationEntryDto,
+): Promise<ArticleExpensQuotationEntryEntity> {
+    try {
+        // 1. Vérification de la référence
+        if (!createArticleExpensQuotationEntryDto.reference) {
+            throw new Error('La référence de l\'article est obligatoire');
+        }
+
+        // 2. Vérification des doublons dans le devis actuel
+        if (createArticleExpensQuotationEntryDto.expenseQuotationId) {
+            const existingEntry = await this.expensQuotationEntryRepository.findOne({
+                where: {
+                    reference: createArticleExpensQuotationEntryDto.reference,
+                    expenseQuotationId: createArticleExpensQuotationEntryDto.expenseQuotationId,
+                    id: Not(createArticleExpensQuotationEntryDto.id || IsNull())
+                }
+            });
+
+            if (existingEntry) {
+                throw new Error(`Un article avec la référence ${createArticleExpensQuotationEntryDto.reference} existe déjà dans ce devis`);
             }
-    
-            // 2. Vérification des doublons dans le devis actuel
-            if (createArticleExpensQuotationEntryDto.expenseQuotationId) {
-                const existingEntry = await this.expensQuotationEntryRepository.findOne({
-                    where: {
-                        reference: createArticleExpensQuotationEntryDto.reference,
-                        expenseQuotationId: createArticleExpensQuotationEntryDto.expenseQuotationId,
-                        id: Not(createArticleExpensQuotationEntryDto.id || IsNull())
+        }
+
+        // 3. Vérification et récupération des taxes
+        const taxes = createArticleExpensQuotationEntryDto.taxes
+            ? await Promise.all(
+                createArticleExpensQuotationEntryDto.taxes.map(async (id) => {
+                    const tax = await this.taxService.findOneById(id);
+                    if (!tax) {
+                        throw new Error(`Taxe avec l'id ${id} non trouvée`);
                     }
-                });
-    
-                if (existingEntry) {
-                    throw new Error(`Un article avec la référence ${createArticleExpensQuotationEntryDto.reference} existe déjà dans ce devis`);
-                }
+                    return tax;
+                }),
+              )
+            : [];
+
+        // 4. Gestion de l'article
+        let article: ArticleEntity | null = null;
+        const articleTitle = createArticleExpensQuotationEntryDto.title || createArticleExpensQuotationEntryDto.article?.title;
+        const articleDescription = createArticleExpensQuotationEntryDto.description || createArticleExpensQuotationEntryDto.article?.description;
+
+        // CAS 1: Article existant spécifié
+        if (createArticleExpensQuotationEntryDto.articleId) {
+            article = await this.articleService.findOneById(createArticleExpensQuotationEntryDto.articleId);
+            if (!article) {
+                throw new Error(`Article avec l'ID ${createArticleExpensQuotationEntryDto.articleId} non trouvé`);
             }
-    
-            // 3. Vérification et récupération des taxes
-            const taxes = createArticleExpensQuotationEntryDto.taxes
-                ? await Promise.all(
-                    createArticleExpensQuotationEntryDto.taxes.map(async (id) => {
-                        const tax = await this.taxService.findOneById(id);
-                        if (!tax) {
-                            throw new Error(`Taxe avec l'id ${id} non trouvée`);
-                        }
-                        return tax;
-                    }),
-                  )
-                : [];
-    
-            // 4. Gestion de l'article
-            let article: ArticleEntity | null = null;
-            const articleTitle = createArticleExpensQuotationEntryDto.title || createArticleExpensQuotationEntryDto.article?.title;
-            const articleDescription = createArticleExpensQuotationEntryDto.description || createArticleExpensQuotationEntryDto.article?.description;
-    
-            // CAS 1: Article existant spécifié
-            if (createArticleExpensQuotationEntryDto.articleId) {
-                article = await this.articleService.findOneById(createArticleExpensQuotationEntryDto.articleId);
-                if (!article) {
-                    throw new Error(`Article avec l'ID ${createArticleExpensQuotationEntryDto.articleId} non trouvé`);
-                }
-    
+
+            // Vérification du stock
+            const requestedQuantity = createArticleExpensQuotationEntryDto.quantity || 0;
+            if (article.quantityInStock < requestedQuantity) {
+                throw new Error(`Stock insuffisant pour ${article.reference}. Disponible: ${article.quantityInStock}, Demandé: ${requestedQuantity}`);
+            }
+
+            // Mise à jour du stock
+            article.quantityInStock -= requestedQuantity;
+            
+            // Mise à jour du prix si spécifié
+            if (createArticleExpensQuotationEntryDto.unit_price !== undefined) {
+                article.unitPrice = createArticleExpensQuotationEntryDto.unit_price;
+            }
+
+            await this.articleService.update(article.id, {
+                quantityInStock: article.quantityInStock,
+                unitPrice: article.unitPrice
+            });
+        }
+        // CAS 2: Nouvel article à créer ou article existant par référence
+        else {
+            // D'abord vérifier si un article avec cette référence existe déjà
+            const existingArticle = await this.articleService.findOneByReference(
+                createArticleExpensQuotationEntryDto.reference
+            );
+
+            if (existingArticle) {
+                // Si l'article existe déjà, on l'utilise
+                article = existingArticle;
+
                 // Vérification du stock
                 const requestedQuantity = createArticleExpensQuotationEntryDto.quantity || 0;
                 if (article.quantityInStock < requestedQuantity) {
                     throw new Error(`Stock insuffisant pour ${article.reference}. Disponible: ${article.quantityInStock}, Demandé: ${requestedQuantity}`);
                 }
-    
+
                 // Mise à jour du stock
                 article.quantityInStock -= requestedQuantity;
                 
@@ -100,18 +130,17 @@ export class ArticleExpensQuotationEntryService {
                 if (createArticleExpensQuotationEntryDto.unit_price !== undefined) {
                     article.unitPrice = createArticleExpensQuotationEntryDto.unit_price;
                 }
-    
+
                 await this.articleService.update(article.id, {
                     quantityInStock: article.quantityInStock,
                     unitPrice: article.unitPrice
                 });
-            }
-            // CAS 2: Nouvel article à créer
-            else {
+            } else {
+                // Création d'un nouvel article
                 if (!articleTitle) {
                     throw new Error('Le titre de l\'article est obligatoire pour créer un nouvel article');
                 }
-    
+
                 article = await this.articleService.save({
                     title: articleTitle,
                     description: articleDescription || '',
@@ -121,55 +150,56 @@ export class ArticleExpensQuotationEntryService {
                     status: 'draft'
                 });
             }
-    
-            // 5. Calcul des totaux
-            const lineItem = {
-                quantity: createArticleExpensQuotationEntryDto.quantity || 0,
-                unit_price: createArticleExpensQuotationEntryDto.unit_price || article.unitPrice || 0,
-                discount: createArticleExpensQuotationEntryDto.discount || 0,
-                discount_type: createArticleExpensQuotationEntryDto.discount_type,
-                taxes
-            };
-    
-            const subTotal = this.calculationsService.calculateSubTotalForLineItem(lineItem);
-            const total = this.calculationsService.calculateTotalForLineItem(lineItem);
-    
-            if (isNaN(subTotal) || isNaN(total)) {
-                throw new Error('Erreur dans le calcul des totaux');
-            }
-    
-            // 6. Sauvegarde de l'entrée de devis
-            const entryData = {
-                ...createArticleExpensQuotationEntryDto,
-                reference: article.reference,
-                articleId: article.id,
-                article: article,
-                title: articleTitle,
-                description: articleDescription,
-                subTotal,
-                total,
-                originalStock: article.quantityInStock + (createArticleExpensQuotationEntryDto.quantity || 0),
-                unit_price: article.unitPrice,
-                orderedQuantity: createArticleExpensQuotationEntryDto.quantity
-            };
-    
-            const entry = await this.expensQuotationEntryRepository.save(entryData);
-    
-            // 7. Sauvegarde des taxes associées
-            if (taxes.length > 0) {
-                await this.expensQuotationEntryTaxService.saveMany(
-                    taxes.map((tax) => ({
-                        taxId: tax.id,
-                        expenseArticleEntryId: entry.id,
-                    })),
-                );
-            }
-    
-            return entry;
-        } catch (error) {
-            throw new Error(`Erreur lors de la sauvegarde de l'article: ${error.message}`);
         }
+
+        // 5. Calcul des totaux
+        const lineItem = {
+            quantity: createArticleExpensQuotationEntryDto.quantity || 0,
+            unit_price: createArticleExpensQuotationEntryDto.unit_price || article.unitPrice || 0,
+            discount: createArticleExpensQuotationEntryDto.discount || 0,
+            discount_type: createArticleExpensQuotationEntryDto.discount_type,
+            taxes
+        };
+
+        const subTotal = this.calculationsService.calculateSubTotalForLineItem(lineItem);
+        const total = this.calculationsService.calculateTotalForLineItem(lineItem);
+
+        if (isNaN(subTotal) || isNaN(total)) {
+            throw new Error('Erreur dans le calcul des totaux');
+        }
+
+        // 6. Sauvegarde de l'entrée de devis
+        const entryData = {
+            ...createArticleExpensQuotationEntryDto,
+            reference: article.reference,
+            articleId: article.id,
+            article: article,
+            title: articleTitle,
+            description: articleDescription,
+            subTotal,
+            total,
+            originalStock: article.quantityInStock + (createArticleExpensQuotationEntryDto.quantity || 0),
+            unit_price: article.unitPrice,
+            orderedQuantity: createArticleExpensQuotationEntryDto.quantity
+        };
+
+        const entry = await this.expensQuotationEntryRepository.save(entryData);
+
+        // 7. Sauvegarde des taxes associées
+        if (taxes.length > 0) {
+            await this.expensQuotationEntryTaxService.saveMany(
+                taxes.map((tax) => ({
+                    taxId: tax.id,
+                    expenseArticleEntryId: entry.id,
+                })),
+            );
+        }
+
+        return entry;
+    } catch (error) {
+        throw new Error(`Erreur lors de la sauvegarde de l'article: ${error.message}`);
     }
+}
 
     async findManyAsLineItem(ids: number[]): Promise<LineItem[]> {
         const lineItems = await Promise.all(

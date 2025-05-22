@@ -290,6 +290,31 @@ async update(
     return { versions };
   }
 
+  @Get(':id/check-availability')
+@ApiOperation({ summary: 'Vérifier la disponibilité d\'un article' })
+@ApiParam({ name: 'id', description: 'ID de l\'article', type: Number })
+async checkAvailability(
+  @Param('id', ParseIntPipe) id: number,
+  @Query('quantity', ParseIntPipe) quantity: number
+) {
+  if (quantity <= 0) {
+    throw new BadRequestException('La quantité doit être un nombre positif');
+  }
+
+  return this.articleService.checkArticleAvailability(id, quantity);
+}
+
+@Put(':id/update-stock')
+@ApiOperation({ summary: 'Mettre à jour le stock d\'un article' })
+@ApiParam({ name: 'id', description: 'ID de l\'article', type: Number })
+async updateStock(
+  @Param('id', ParseIntPipe) id: number,
+  @Body() body: { quantityChange: number }
+): Promise<ResponseArticleDto> {
+  const updatedArticle = await this.articleService.updateArticleStock(id, body.quantityChange);
+  return this.mapToResponseDto(updatedArticle);
+}
+
 
   ////////////////////////////////////////correction en haut 
 /*

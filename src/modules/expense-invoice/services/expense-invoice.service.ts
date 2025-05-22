@@ -395,7 +395,6 @@ private async generateSequentialNumber(): Promise<string> {
       currencyId: currency ? currency.id : firm.currencyId,
       cabinetId: 1,
       sequentialNumbr,
-      articleExpenseEntries: articleEntries,
       expenseInvoiceMetaData: invoiceMetaData,
       subTotal,
       taxWithholdingAmount,

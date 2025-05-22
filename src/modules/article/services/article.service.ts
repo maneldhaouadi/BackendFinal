@@ -199,6 +199,59 @@ async strictUpdate(id: number, data: UpdateArticleDto): Promise<ArticleEntity> {
     }
   }
 
+  async updateArticleStock(articleId: number, quantityChange: number): Promise<ArticleEntity> {
+    // Trouver l'article
+    const article = await this.findOneById(articleId);
+    
+    if (!article) {
+      throw new NotFoundException(`Article avec ID ${articleId} non trouvé`);
+    }
+  
+    // Calculer la nouvelle quantité
+    const newQuantity = article.quantityInStock + quantityChange;
+    
+    if (newQuantity < 0) {
+      throw new BadRequestException(
+        `Quantité insuffisante. Stock actuel: ${article.quantityInStock}, tentative de retrait: ${-quantityChange}`
+      );
+    }
+  
+    // Mettre à jour le stock
+    article.quantityInStock = newQuantity;
+  
+    // Vérifier si le statut doit être mis à jour
+    if (newQuantity === 0 && article.status !== 'out_of_stock') {
+      article.status = 'out_of_stock';
+    } else if (newQuantity > 0 && article.status === 'out_of_stock') {
+      article.status = 'active';
+    }
+  
+    // Enregistrer les changements
+    return this.articleRepository.save(article);
+  }
+
+  async checkArticleAvailability(articleId: number, requestedQuantity: number): Promise<{
+    available: boolean;
+    availableQuantity: number;
+    message?: string;
+  }> {
+    const article = await this.findOneById(articleId);
+    
+    if (!article) {
+      throw new NotFoundException(`Article avec ID ${articleId} non trouvé`);
+    }
+  
+    const available = article.quantityInStock >= requestedQuantity;
+    
+    return {
+      available,
+      availableQuantity: article.quantityInStock,
+      message: available 
+        ? 'Quantité disponible'
+        : `Quantité insuffisante. Stock disponible: ${article.quantityInStock}`
+    };
+  }
+
   async saveMany(
     createArticleDtos: (CreateArticleDto & { justificatifFile?: Express.Multer.File })[]
   ): Promise<ArticleEntity[]> {

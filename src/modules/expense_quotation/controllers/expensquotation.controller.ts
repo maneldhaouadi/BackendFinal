@@ -80,6 +80,10 @@ async findAll(
   return await this.expensQuotationService.findAll(options);
 }
 
+@Get('/statuses')
+async getAvailableStatuses(): Promise<{ value: string; label: string }[]> {
+  return this.expensQuotationService.getAvailableStatuses();
+}
   
 
 
