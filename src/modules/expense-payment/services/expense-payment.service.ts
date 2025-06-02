@@ -364,23 +364,16 @@ async update(
         throw new Error('Payment currency not found');
       }
 
-      // 4. Sauvegarde des anciens montants pour calcul des différences
-      const oldEntriesMap = new Map<number, {
-        oldAmount: number;
-        oldOriginalAmount: number;
-      }>();
+      // 4. Récupérer toutes les entrées existantes pour ce paiement
+      const existingEntries = existingPayment.invoices || [];
       
-      existingPayment.invoices.forEach(entry => {
-        oldEntriesMap.set(entry.expenseInvoiceId, {
-          oldAmount: entry.amount,
-          oldOriginalAmount: entry.originalAmount
-        });
-      });
-
       // 5. Calculer l'impact total des modifications
       let totalPaymentAmount = 0;
       const invoiceEntries = await Promise.all(
         updatePaymentDto.invoices.map(async (newEntry) => {
+          // Vérifier si c'est une entrée existante ou nouvelle
+          const existingEntry = existingEntries.find(e => e.expenseInvoiceId === newEntry.expenseInvoiceId);
+          
           const invoice = await this.expenseInvoiceService.findOneByCondition({
             filter: `id||$eq||${newEntry.expenseInvoiceId}`,
             join: 'currency,payments',
@@ -408,52 +401,56 @@ async update(
             .reduce((sum, p) => sum + p.amount, 0);
 
           // 8. Montant actuellement payé via ce paiement (avant modification)
-          const oldEntryData = oldEntriesMap.get(invoice.id);
-          const oldAmountInInvoiceCurrency = oldEntryData 
-            ? createDinero(oldEntryData.oldAmount)
+          const oldAmountInInvoiceCurrency = existingEntry 
+            ? createDinero(existingEntry.amount)
             : zero;
 
-          // 9. Calcul du nouveau montant avec conversion de devise si nécessaire
-          let newAmountInInvoiceCurrency: dinero.Dinero;
-          let newAmountInPaymentCurrency: dinero.Dinero;
-          let exchangeRate = 1;
+          // 9. Calcul du montant supplémentaire à ajouter
+          let additionalAmountInPaymentCurrency = createDinero(newEntry.originalAmount);
+          let additionalAmountInInvoiceCurrency: dinero.Dinero;
+          let exchangeRate = newEntry.exchangeRate || existingPayment.convertionRate || 1;
 
           if (invoice.currencyId !== paymentCurrency.id) {
-            exchangeRate = newEntry.exchangeRate || existingPayment.convertionRate || 1;
             if (!exchangeRate || exchangeRate <= 0) {
               throw new Error(`Invalid exchange rate for invoice ${invoice.id}`);
             }
-
-            // Le montant fourni est dans la devise de paiement
-            newAmountInPaymentCurrency = createDinero(newEntry.originalAmount);
-            newAmountInInvoiceCurrency = newAmountInPaymentCurrency.divide(exchangeRate);
+            additionalAmountInInvoiceCurrency = additionalAmountInPaymentCurrency.divide(exchangeRate);
           } else {
-            // Même devise
-            newAmountInInvoiceCurrency = createDinero(newEntry.amount);
-            newAmountInPaymentCurrency = newAmountInInvoiceCurrency;
+            additionalAmountInInvoiceCurrency = additionalAmountInPaymentCurrency;
             exchangeRate = 1;
           }
 
-          // 10. Calcul du nouveau montant total payé sur la facture
+          // 10. Calcul du nouveau montant total pour cette entrée
+          const newAmountInInvoiceCurrency = existingEntry
+            ? createDinero(existingEntry.amount).add(additionalAmountInInvoiceCurrency)
+            : additionalAmountInInvoiceCurrency;
+
+          const newAmountInPaymentCurrency = existingEntry
+            ? createDinero(existingEntry.originalAmount).add(additionalAmountInPaymentCurrency)
+            : additionalAmountInPaymentCurrency;
+
+          // 11. Calcul du nouveau montant total payé sur la facture
           const newTotalPaid = createDinero(paidFromOtherPayments)
             .subtract(oldAmountInInvoiceCurrency)
             .add(newAmountInInvoiceCurrency);
 
-          // 11. Validation du montant
+          // 12. Validation du montant
           const invoiceTotal = createDinero(invoice.total);
           const taxWithholding = createDinero(invoice.taxWithholdingAmount || 0);
           const remainingBefore = invoiceTotal
             .subtract(createDinero(paidFromOtherPayments))
             .subtract(taxWithholding);
 
-          if (newAmountInInvoiceCurrency.greaterThan(remainingBefore.add(tolerance))) {
+          // Vérifier que le montant supplémentaire ne dépasse pas le restant dû
+          if (additionalAmountInInvoiceCurrency.greaterThan(remainingBefore.add(tolerance))) {
             throw new Error(
-              `Payment of ${newAmountInInvoiceCurrency.toUnit()} ${invoice.currency.code} ` +
-              `exceeds remaining amount of ${remainingBefore.toUnit()} for invoice ${invoice.id}`
+              `Additional payment of ${additionalAmountInInvoiceCurrency.toUnit()} ${invoice.currency.code} ` +
+              `exceeds remaining amount of ${remainingBefore.toUnit()} for invoice ${invoice.id}. ` +
+              `Maximum allowed: ${remainingBefore.toUnit()}`
             );
           }
 
-          // 12. Mise à jour du statut de la facture
+          // 13. Mise à jour du statut de la facture
           const newRemaining = invoiceTotal
             .subtract(newTotalPaid)
             .subtract(taxWithholding);
@@ -467,7 +464,7 @@ async update(
             newStatus = EXPENSE_INVOICE_STATUS.PartiallyPaid;
           }
 
-          // 13. Mise à jour de la facture
+          // 14. Mise à jour de la facture
           await this.expenseInvoiceService.updateFields(invoice.id, {
             amountPaid: newTotalPaid.toUnit(),
             status: newStatus,
@@ -487,7 +484,7 @@ async update(
         })
       );
 
-      // 14. Sauvegarde des nouvelles entrées
+      // 15. Sauvegarde des nouvelles entrées
       await this.expensePaymentInvoiceEntryService.saveMany(
         invoiceEntries.filter(entry => entry !== null)
       );
@@ -495,7 +492,7 @@ async update(
       paymentData.amount = totalPaymentAmount;
     }
 
-    // 15. Sauvegarde finale du paiement
+    // 16. Sauvegarde finale du paiement
     const updatedPayment = await this.expenesePaymentRepository.save(paymentData);
     return updatedPayment;
   } catch (error) {
@@ -663,7 +660,6 @@ async softDeleteMany(ids: number[]): Promise<void> {
   }
 
   async generatePaymentPdf(paymentId: number, templateId?: number): Promise<Buffer> {
-    // 1. Récupérer le paiement avec toutes les relations nécessaires
     const payment = await this.expenesePaymentRepository.findOne({
         where: { id: paymentId },
         relations: [
@@ -682,7 +678,6 @@ async softDeleteMany(ids: number[]): Promise<void> {
         throw new NotFoundException(`Paiement avec ID ${paymentId} non trouvé`);
     }
 
-    // 2. Récupérer le template
     const template = templateId 
         ? await this.templateService.getTemplateById(templateId)
         : await this.templateService.getDefaultTemplate(TemplateType.PAYMENT);
@@ -691,39 +686,34 @@ async softDeleteMany(ids: number[]): Promise<void> {
         throw new NotFoundException('Aucun template de paiement trouvé');
     }
 
-    // 3. Préparer les données pour le template
-    // 3. Préparer les données pour le template
-const templateData = {
-  payment: {
-      ...payment,
-      paymentMethod: PAYMENT_MODE[payment.mode] || payment.mode,
-      // Formatage des dates
-      date: format(payment.date, 'dd/MM/yyyy'),
-      createdAt: format(payment.createdAt, 'dd/MM/yyyy'),
-      
-      // Invoices avec formatage spécifique et calcul du montant restant
-      invoices: payment.invoices?.map(entry => ({
-          invoiceNumber: entry.expenseInvoice?.sequential,
-          invoiceDate: entry.expenseInvoice?.date ? format(entry.expenseInvoice.date, 'dd/MM/yyyy') : 'N/A',
-          dueDate: entry.expenseInvoice?.dueDate ? format(entry.expenseInvoice.dueDate, 'dd/MM/yyyy') : 'N/A',
-          amount: entry.amount,
-          originalAmount: entry.originalAmount,
-          currency: entry.expenseInvoice?.currency?.code || 'N/A',
-          exchangeRate: entry.exchangeRate,
-          firm: entry.expenseInvoice?.firm?.name || 'N/A',
-          total: entry.expenseInvoice?.total || 0,
-          remainingAmount: (entry.expenseInvoice?.total || 0) - (entry.amount || 0)
-      })) || [],
-      
-      // Gestion des valeurs nulles
-      currency: payment.currency || {
-          code: 'EUR',
-          symbol: '€'
-      }
-  }
-};
+    // Enregistrer le templateId dans le paiement si différent ou non défini
+    if (payment.templateId !== template.id) {
+        payment.templateId = template.id;
+        await this.expenesePaymentRepository.save(payment);
+    }
 
-    // 4. Nettoyer et compiler le template
+    const templateData = {
+        payment: {
+            ...payment,
+            paymentMethod: PAYMENT_MODE[payment.mode] || payment.mode,
+            date: format(payment.date, 'dd/MM/yyyy'),
+            createdAt: format(payment.createdAt, 'dd/MM/yyyy'),
+            invoices: payment.invoices?.map(entry => ({
+                invoiceNumber: entry.expenseInvoice?.sequential,
+                invoiceDate: entry.expenseInvoice?.date ? format(entry.expenseInvoice.date, 'dd/MM/yyyy') : 'N/A',
+                dueDate: entry.expenseInvoice?.dueDate ? format(entry.expenseInvoice.dueDate, 'dd/MM/yyyy') : 'N/A',
+                amount: entry.amount,
+                originalAmount: entry.originalAmount,
+                currency: entry.expenseInvoice?.currency?.code || 'N/A',
+                exchangeRate: entry.exchangeRate,
+                firm: entry.expenseInvoice?.firm?.name || 'N/A',
+                total: entry.expenseInvoice?.total || 0,
+                remainingAmount: (entry.expenseInvoice?.total || 0) - (entry.amount || 0)
+            })) || [],
+            currency: payment.currency || { code: 'EUR', symbol: '€' }
+        }
+    };
+
     const cleanedContent = template.content
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
@@ -732,12 +722,12 @@ const templateData = {
 
     const compiledHtml = ejs.render(cleanedContent, templateData);
 
-    // 5. Générer le PDF
     return this.pdfService.generateFromHtml(compiledHtml, {
         format: 'A4',
         margin: { top: '20mm', right: '10mm', bottom: '20mm', left: '10mm' },
         printBackground: true
     });
 }
+
 
 }

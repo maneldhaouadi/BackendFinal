@@ -1,6 +1,5 @@
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
 import { EntityHelper } from 'src/common/database/interfaces/database.entity.interface';
-import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
 import {
   Entity,
   Column,
@@ -11,6 +10,7 @@ import {
 } from 'typeorm';
 import { ArticleInvoiceEntryTaxEntity } from './article-invoice-entry-tax.entity';
 import { InvoiceEntity } from './invoice.entity';
+import { ArticleEntity } from 'src/modules/article/article/repositories/entities/article.entity';
 
 @Entity('article-invoice-entry')
 export class ArticleInvoiceEntryEntity extends EntityHelper {

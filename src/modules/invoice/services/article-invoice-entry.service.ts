@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { TaxService } from 'src/modules/tax/services/tax.service';
-import { ArticleService } from 'src/modules/article/services/article.service';
-import { ResponseArticleDto } from 'src/modules/article/dtos/article.response.dto';
+
 import { InvoicingCalculationsService } from 'src/common/calculations/services/invoicing.calculations.service';
 import { LineItem } from 'src/common/calculations/interfaces/line-item.interface';
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
@@ -14,6 +13,8 @@ import { ArticleInvoiceEntryEntity } from '../repositories/entities/article-invo
 import { ArticleInvoiceEntryNotFoundException } from '../errors/article-invoice-entry.notfound.error';
 import { CreateArticleInvoiceEntryDto } from '../dtos/article-invoice-entry.create.dto';
 import { UpdateArticleInvoiceEntryDto } from '../dtos/article-invoice-entry.update.dto';
+import { ArticleService } from 'src/modules/article/article/services/article.service';
+import { ResponseArticleDto } from 'src/modules/article/article/dtos/article.response.dto';
 
 @Injectable()
 export class ArticleInvoiceEntryService {
@@ -24,7 +25,7 @@ export class ArticleInvoiceEntryService {
     private readonly taxService: TaxService,
     private readonly calculationsService: InvoicingCalculationsService,
   ) {}
-/*
+
   async findOneByCondition(
     query: IQueryObject,
   ): Promise<ResponseArticleInvoiceEntryDto | null> {
@@ -264,5 +265,5 @@ export class ArticleInvoiceEntryService {
       ids.map(async (id) => this.softDelete(id)),
     );
     return entries;
-  }*/
+  }
 }

@@ -9,7 +9,6 @@ import { EXPENSE_INVOICE_STATUS } from 'src/modules/expense-invoice/enums/expens
 import { ExpenseInvoiceEntity } from 'src/modules/expense-invoice/repositories/entities/expense-invoice.entity';
 import { ArticleExpensQuotationEntryEntity } from 'src/modules/expense_quotation/repositories/entities/article-expensquotation-entry.entity';
 import { CurrencyRepository } from 'src/modules/currency/repositories/repository/currency.repository';
-import { ArticleRepository } from 'src/modules/article/repositories/repository/article.repository';
 import { InterlocutorRepository } from 'src/modules/interlocutor/repositories/repository/interlocutor.repository';
 import { ExpenseArticleQuotationEntryRepository } from 'src/modules/expense_quotation/repositories/repository/article-expensquotation-entry.repository';
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
@@ -17,6 +16,7 @@ import { FirmRepository } from 'src/modules/firm/repositories/repository/firm.re
 import { PAYMENT_MODE } from 'src/modules/expense-payment/enums/expense-payment-mode.enum';
 import { HistoryRepository } from '../repositories/repository/HistoryRepository';
 import { HistoryEntry } from '../interfaces/history_entry.interface';
+import { ArticleRepository } from 'src/modules/article/article/repositories/repository/article.repository';
 
 
 @Injectable()
@@ -82,7 +82,7 @@ export class DialogflowService {
         comparisonError: 'An error occurred during comparison.',
         invalidQuotationFormat: 'Invalid quotation number format. Please use QUO-XXXXXX format (6 digits).',
       quotationNumberExists: 'Quotation number {number} already exists. Please enter a different number.',
-      dueDateBeforeDateError: 'Due date must always be after the creation date.'
+      dueDateBeforeDateError: 'Due date must always be after the creation date.',
 
       },
       fr: {
@@ -143,260 +143,298 @@ export class DialogflowService {
   }
 
   
-  public async detectIntent(
-    languageCode: string,
-    queryText: string,
-    sessionId: string,
-    parameters?: any
-  ): Promise<any> {
-    const lang = languageCode || 'fr';
-    const t = this.getTranslation(lang);
-    const sessionPath = this.sessionClient.projectAgentSessionPath(
-      this.PROJECT_ID,
-      sessionId
-    );
-  
-    // 1. Vérifier l'historique
-    const existingHistory = await this.historyRepository.getFullHistory(sessionId);
-    const isHistoryRequest = 
-      queryText.toLowerCase().includes('history') || 
-      queryText.toLowerCase().includes('historique') ||
-      queryText.toLowerCase().includes('previous conversations') ||
-      queryText.toLowerCase().includes('conversations précédentes');
-  
-    if (isHistoryRequest) {
-      const history = await this.getHistory(sessionId);
-      const response = {
-        fulfillmentText: history || t('noHistoryAvailable'),
-        intent: 'show_history',
-        allRequiredParamsPresent: true,
-        outputContexts: parameters?.outputContexts || []
-      };
-      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-      return response;
-    }
-  
-    // 2. Extraire les numéros de documents d'abord
-    const invoiceNumber = this.extractInvoiceNumber(queryText);
-    const quotationNumber = this.extractQuotationNumber(queryText);
-  
-    if (quotationNumber && !this.isValidQuotationFormat(quotationNumber)) {
-      const errorMessage = t('invalidQuotationFormat');
-      await this.saveToHistory(sessionId, queryText, errorMessage);
-      return {
-        fulfillmentText: errorMessage,
-        outputContexts: []
-      };
-    }
+ public async detectIntent(
+  languageCode: string,
+  queryText: string,
+  sessionId: string,
+  parameters?: any
+): Promise<any> {
+  const lang = languageCode || 'fr';
+  const t = this.getTranslation(lang);
+  const sessionPath = this.sessionClient.projectAgentSessionPath(
+    this.PROJECT_ID,
+    sessionId
+  );
+   const exactQuotationPhrases = [
+    'je veux créer une quotation',
+    'crée une quotation',
+    'nouvelle quotation',
+    'créer une quotation',
+    'je souhaite créer une quotation'
+  ].map(phrase => phrase.toLowerCase().trim().replace(/\s+/g, ' '));
 
-    // 3. Détection des comparaisons - PRIORITAIRE
-    if (this.isComparisonRequest(queryText)) {
-      const comparisonParams = {
-        data_type: invoiceNumber ? 'facture' : 'devis',
-        field_name: this.extractFieldName(queryText),
-        user_value: this.extractComparisonValue(queryText),
-        reference_id: invoiceNumber || quotationNumber
-      };
-      
-      if (comparisonParams.reference_id) {
-        const comparisonResult = await this.handleDataComparison(comparisonParams, lang);
-        if (comparisonResult.success) {
-          await this.saveToHistory(sessionId, queryText, comparisonResult.message);
-          return {
-            fulfillmentText: comparisonResult.message,
-            intent: 'CompareData',
-            allRequiredParamsPresent: true,
-            outputContexts: []
-          };
-        }
-      }
-    }
-  
-    // 4. Traitement normal des documents si pas de comparaison
-    if (invoiceNumber) {
-      const response = await this.handleInvoiceStatus(invoiceNumber, lang, sessionId);
-      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-      return response;
-    }
-  
-    if (quotationNumber) {
-      const response = await this.handleQuotationStatus(quotationNumber, lang, sessionId);
-      await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-      return response;
-    }
-  
-    // 5. Préparation de la requête Dialogflow standard
-    const historyContent = existingHistory.entries.length > 0 
-      ? existingHistory.entries
-          .map(e => `User: ${e.user}\nBot: ${e.bot}`)
-          .join('\n\n')
-      : '';
-  
-    const request = {
-      session: sessionPath,
-      queryInput: {
-        text: {
-          text: queryText,
-          languageCode: lang
-        }
-      },
-      queryParams: {
-        contexts: parameters?.outputContexts || [],
-        payload: {
-          fields: {
-            conversation_history: {
-              stringValue: historyContent
+ const normalizeInput = (text: string) => {
+    return text
+      .toLowerCase()
+      .normalize("NFD") // Séparation des accents
+      .replace(/[\u0300-\u036f]/g, "") // Suppression des accents
+      .trim()
+      .replace(/\s+/g, ' ');
+  };
+
+  // 3. Nettoyage et vérification
+const cleanedInput = normalizeInput(queryText);
+  const isQuotationRequest = exactQuotationPhrases.includes(cleanedInput);
+
+
+if (isQuotationRequest) {
+    // Ici vous pouvez soit:
+    // a) Retourner directement la réponse de création
+    // b) Laisser Dialogflow gérer le flux normal
+
+    // Solution recommandée (a):
+    return {
+      fulfillmentText: "Commençons la création de votre devis. Veuillez fournir le numéro séquentiel du devis :",
+      outputContexts: [
+        {
+          name: `${sessionPath}/contexts/awaiting_quotation`,
+          lifespanCount: 5,
+          parameters: {
+            currentStep: "sequentialNumbr",
+            quotationData: {
+              articles: [],
+              status: "draft",
+              currencyId: 1
             }
           }
         }
-      }
+      ]
     };
+  }
+
+  // 3. Vérification ultra-stricte pour les requêtes de quotation
+  const containsQuotationWord = /\bquotation\b/i.test(queryText);
   
-    try {
-      const responses = await this.sessionClient.detectIntent(request);
-      const result = responses[0].queryResult;
-  
-      const saveAndReturn = async (response: any) => {
-        await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-        return response;
-      };
-  
-      // Traitement des intents spécifiques
-      if (result.intent?.displayName === 'AddQuotationArticle' && result.allRequiredParamsPresent) {
-        const params = result.parameters.fields;
-        const discountType = params.discountType?.stringValue?.toUpperCase() === 'AMMOUNT' 
-          ? DISCOUNT_TYPES.AMOUNT 
-          : DISCOUNT_TYPES.PERCENTAGE;
-  
-        const addResult = await this.addArticleToQuotation({
-          quotationNumber: params.quotationNumber?.stringValue,
-          articleId: params.articleId.numberValue,
-          quantity: params.quantity.numberValue,
-          discount: params.discount?.numberValue || 0,
-          discount_type: discountType,
-          unit_price: params.unitPrice?.numberValue
-        }, lang);
-  
-        return await saveAndReturn({
-          fulfillmentText: addResult.message,
-          intent: result.intent.displayName,
-          parameters: result.parameters,
-          outputContexts: result.outputContexts,
-          allRequiredParamsPresent: true
-        });
-      }
-  
-      if (result.intent?.displayName === 'CreateQuotation' && result.allRequiredParamsPresent) {
-        try {
-          const params = result.parameters.fields;
-          const articles = [];
-          const articleId = params.articleId?.numberValue;
-  
-          if (articleId !== undefined) {
-            const articleInfo = await this.getArticleInfo(articleId, lang);
-            if (!articleInfo) {
-              throw new Error(t.articleNotFound.replace('{{id}}', articleId.toString()));
-            }
-  
-            articles.push({
-              articleId: articleId,
-              quantity: params.quantity?.numberValue || 1,
-              discount: params.discount?.numberValue || 0,
-              discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE,
-              unit_price: articleInfo.unitPrice
-            });
-          }
-  
-          const creationResult = await this.createQuotation({
-            firmName: params.firmName.stringValue,
-            cabinetId: params.cabinetId?.numberValue || 1,
-            interlocutorName: params.interlocutorName.stringValue,
-            currencyId: params.currencyId?.numberValue,
-            object: params.object?.stringValue || `${t.quotation} ${new Date().toLocaleDateString(lang)}`,
-            sequentialNumbr: params.sequentialNumbr?.stringValue,
-            articles: articles,
-            status: this.mapStatusStringToEnum(params.status?.stringValue),
-            dueDate: params.duedate?.stringValue ? new Date(params.duedate.stringValue) : undefined,
-            date: params.date?.stringValue ? new Date(params.date.stringValue) : new Date()
-          }, lang, sessionId, queryText);
-  
-          return await saveAndReturn({
-            fulfillmentText: creationResult.message,
-            intent: result.intent.displayName,
-            parameters: result.parameters,
-            outputContexts: result.outputContexts,
-            allRequiredParamsPresent: true
-          });
-        } catch (error) {
-          console.error('Error in CreateQuotation intent:', error);
-          await this.saveToHistory(sessionId, queryText, `${t.creationError}: ${error.message}`);
-          return {
-            fulfillmentText: `${t.creationError}: ${error.message}`,
-            outputContexts: []
-          };
-        }
-      }
-  
-      // Traitement FAQ_Invoice
-      if (result.intent?.displayName === 'FAQ_Invoice' && result.parameters.fields.invoice_number?.stringValue) {
-        const response = await this.handleInvoiceStatus(
-          result.parameters.fields.invoice_number.stringValue, 
-          lang, 
-          sessionId
-        );
-        await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-        return response;
-      }
-  
-      // Traitement FAQ_Quotation
-      if (result.intent?.displayName === 'FAQ_Quotation' && result.parameters.fields.quotation_number?.stringValue) {
-        const response = await this.handleQuotationStatus(
-          result.parameters.fields.quotation_number.stringValue, 
-          lang, 
-          sessionId
-        );
-        await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
-        return response;
-      }
-  
-      // Traitement FAQ_Invoice_Payments
-      if (result.intent?.displayName === 'FAQ_Invoice_Payments' && result.parameters.fields.sequentialNumbr?.stringValue) {
-        const payments = await this.getInvoicePayments(
-          result.parameters.fields.sequentialNumbr.stringValue, 
-          lang
-        );
-        
-        let responseText = payments.success
-          ? this.formatPaymentResponse(payments, lang)
-          : payments.message;
-  
-        return await saveAndReturn({
-          fulfillmentText: responseText,
-          intent: result.intent.displayName,
-          parameters: result.parameters,
-          outputContexts: result.outputContexts,
-          allRequiredParamsPresent: true
-        });
-      }
-  
-      // Réponse par défaut
-      return await saveAndReturn({
-        fulfillmentText: result.fulfillmentText,
-        intent: result.intent?.displayName,
-        parameters: result.parameters,
-        outputContexts: result.outputContexts,
-        allRequiredParamsPresent: result.allRequiredParamsPresent
-      });
-  
-    } catch (error) {
-      console.error('Dialogflow error:', error);
-      await this.saveToHistory(sessionId, queryText, t.error);
+  if (containsQuotationWord) {
+    // Vérifie si la phrase correspond exactement à une des phrases autorisées
+    const isExactMatch = exactQuotationPhrases.some(
+      phrase => cleanedInput === phrase
+    );
+
+    // Vérifie aussi s'il y a des caractères supplémentaires après "quotation"
+    const hasExtraCharsAfterQuotation = 
+      !/\bquotation\b$/i.test(queryText.trim()) && 
+      /\bquotation[a-z]*\b/i.test(queryText);
+
+    if (!isExactMatch || hasExtraCharsAfterQuotation) {
       return {
-        fulfillmentText: t.error,
+        fulfillmentText: t.fallback,
+        intent: 'Default_Fallback_Intent',
+        allRequiredParamsPresent: false,
         outputContexts: []
       };
     }
   }
+
+  
+  // 1. Vérifier l'historique
+ const existingHistory = await this.historyRepository.getFullHistory(sessionId);
+  const isHistoryRequest = 
+    queryText.toLowerCase().includes('history') || 
+    queryText.toLowerCase().includes('historique') ||
+    queryText.toLowerCase().includes('previous conversations') ||
+    queryText.toLowerCase().includes('conversations précédentes');
+
+  if (isHistoryRequest) {
+    const history = await this.getHistory(sessionId);
+    const response = {
+      fulfillmentText: history || t('noHistoryAvailable'),
+      intent: 'show_history',
+      allRequiredParamsPresent: true,
+      outputContexts: parameters?.outputContexts || []
+    };
+    await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+    return response;
+  }
+
+  // 2. Extraire les numéros de documents d'abord
+  const invoiceNumber = this.extractInvoiceNumber(queryText);
+  const quotationNumber = this.extractQuotationNumber(queryText);
+
+  if (quotationNumber && !this.isValidQuotationFormat(quotationNumber)) {
+    const errorMessage = t('invalidQuotationFormat');
+    await this.saveToHistory(sessionId, queryText, errorMessage);
+    return {
+      fulfillmentText: errorMessage,
+      outputContexts: []
+    };
+  }
+
+  // 3. Détection des comparaisons - PRIORITAIRE
+  if (this.isComparisonRequest(queryText)) {
+    const comparisonParams = {
+      data_type: invoiceNumber ? 'facture' : 'devis',
+      field_name: this.extractFieldName(queryText),
+      user_value: this.extractComparisonValue(queryText),
+      reference_id: invoiceNumber || quotationNumber
+    };
+    
+    if (comparisonParams.reference_id) {
+      const comparisonResult = await this.handleDataComparison(comparisonParams, lang);
+      if (comparisonResult.success) {
+        await this.saveToHistory(sessionId, queryText, comparisonResult.message);
+        return {
+          fulfillmentText: comparisonResult.message,
+          intent: 'CompareData',
+          allRequiredParamsPresent: true,
+          outputContexts: []
+        };
+      }
+    }
+  }
+
+  // 4. Traitement normal des documents si pas de comparaison
+  if (invoiceNumber) {
+    const response = await this.handleInvoiceStatus(invoiceNumber, lang, sessionId);
+    await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+    return response;
+  }
+
+  if (quotationNumber) {
+    const response = await this.handleQuotationStatus(quotationNumber, lang, sessionId);
+    await this.saveToHistory(sessionId, queryText, response.fulfillmentText);
+    return response;
+  }
+
+  // 5. Préparation de la requête Dialogflow standard
+  const historyContent = existingHistory.entries.length > 0 
+    ? existingHistory.entries
+        .map(e => `User: ${e.user}\nBot: ${e.bot}`)
+        .join('\n\n')
+    : '';
+
+  const request = {
+    session: sessionPath,
+    queryInput: {
+      text: {
+        text: queryText,
+        languageCode: lang
+      }
+    },
+    queryParams: {
+      contexts: parameters?.outputContexts || [],
+      payload: {
+        fields: {
+          conversation_history: {
+            stringValue: historyContent
+          }
+        }
+      }
+    }
+  };
+
+  try {
+    const responses = await this.sessionClient.detectIntent(request);
+    const result = responses[0].queryResult;
+
+    // Vérification du score de confiance et de l'intention fallback
+    if (result.intent?.displayName === 'Default Fallback Intent' || 
+        result.intentDetectionConfidence < 0.5) { // Seuil de confiance abaissé à 0.5
+      return {
+        fulfillmentText: t.fallback,
+        intent: 'Default_Fallback_Intent',
+        allRequiredParamsPresent: false,
+        outputContexts: []
+      };
+    }
+
+    // Traitement des intents spécifiques
+    if (result.intent?.displayName === 'AddQuotationArticle' && result.allRequiredParamsPresent) {
+      const params = result.parameters.fields;
+      const discountType = params.discountType?.stringValue?.toUpperCase() === 'AMMOUNT' 
+        ? DISCOUNT_TYPES.AMOUNT 
+        : DISCOUNT_TYPES.PERCENTAGE;
+
+      const addResult = await this.addArticleToQuotation({
+        quotationNumber: params.quotationNumber?.stringValue,
+        articleId: params.articleId.numberValue,
+        quantity: params.quantity.numberValue,
+        discount: params.discount?.numberValue || 0,
+        discount_type: discountType,
+        unit_price: params.unitPrice?.numberValue
+      }, lang);
+
+      await this.saveToHistory(sessionId, queryText, addResult.message);
+      return {
+        fulfillmentText: addResult.message,
+        intent: result.intent.displayName,
+        parameters: result.parameters,
+        outputContexts: result.outputContexts,
+        allRequiredParamsPresent: true
+      };
+    }
+
+    if (result.intent?.displayName === 'CreateQuotation' && result.allRequiredParamsPresent) {
+      try {
+        const params = result.parameters.fields;
+        const articles = [];
+        const articleId = params.articleId?.numberValue;
+
+        if (articleId !== undefined) {
+          const articleInfo = await this.getArticleInfo(articleId, lang);
+          if (!articleInfo) {
+            throw new Error(t.articleNotFound.replace('{{id}}', articleId.toString()));
+          }
+
+          articles.push({
+            articleId: articleId,
+            quantity: params.quantity?.numberValue || 1,
+            discount: params.discount?.numberValue || 0,
+            discount_type: params.discount_type?.stringValue as DISCOUNT_TYPES || DISCOUNT_TYPES.PERCENTAGE,
+            unit_price: articleInfo.unitPrice
+          });
+        }
+
+        const creationResult = await this.createQuotation({
+          firmName: params.firmName.stringValue,
+          cabinetId: params.cabinetId?.numberValue || 1,
+          interlocutorName: params.interlocutorName.stringValue,
+          currencyId: params.currencyId?.numberValue,
+          object: params.object?.stringValue || `${t.quotation} ${new Date().toLocaleDateString(lang)}`,
+          sequentialNumbr: params.sequentialNumbr?.stringValue,
+          articles: articles,
+          status: this.mapStatusStringToEnum(params.status?.stringValue),
+          dueDate: params.duedate?.stringValue ? new Date(params.duedate.stringValue) : undefined,
+          date: params.date?.stringValue ? new Date(params.date.stringValue) : new Date()
+        }, lang, sessionId, queryText);
+
+        await this.saveToHistory(sessionId, queryText, creationResult.message);
+        return {
+          fulfillmentText: creationResult.message,
+          intent: result.intent.displayName,
+          parameters: result.parameters,
+          outputContexts: result.outputContexts,
+          allRequiredParamsPresent: true
+        };
+      } catch (error) {
+        console.error('Error in CreateQuotation intent:', error);
+        await this.saveToHistory(sessionId, queryText, `${t.creationError}: ${error.message}`);
+        return {
+          fulfillmentText: `${t.creationError}: ${error.message}`,
+          outputContexts: []
+        };
+      }
+    }
+
+    // Réponse par défaut pour les autres intentions
+    await this.saveToHistory(sessionId, queryText, result.fulfillmentText);
+    return {
+      fulfillmentText: result.fulfillmentText,
+      intent: result.intent?.displayName,
+      parameters: result.parameters,
+      outputContexts: result.outputContexts,
+      allRequiredParamsPresent: result.allRequiredParamsPresent
+    };
+
+  } catch (error) {
+    console.error('Dialogflow error:', error);
+    await this.saveToHistory(sessionId, queryText, t.error);
+    return {
+      fulfillmentText: t.error,
+      outputContexts: []
+    };
+  }
+}
   private extractComparisonValue(text: string): string | number | null {
     // Détection des valeurs entre guillemets (pour le statut)
     const quotedMatch = text.match(/['"]([^'"]+)['"]/);

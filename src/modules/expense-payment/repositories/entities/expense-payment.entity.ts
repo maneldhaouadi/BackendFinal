@@ -79,7 +79,10 @@ export class ExpensePaymentEntity extends EntityHelper {
   @Column({ type: 'int', nullable: true })
   targetCurrencyId: number;
 
- /* @ManyToOne(() => Template, { nullable: true })
-@JoinColumn({ name: 'template_id' })
-template: Template;*/
+ @ManyToOne(() => Template, { nullable: true })
+@JoinColumn({ name: "templateId" })
+template: Template;
+
+@Column({ nullable: true })
+templateId: number;
 }

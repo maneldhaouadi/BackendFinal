@@ -1,20 +1,20 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ArticleExpensQuotationEntryEntity } from '../repositories/entities/article-expensquotation-entry.entity';
 import { TaxService } from 'src/modules/tax/services/tax.service';
-import { ArticleService } from 'src/modules/article/services/article.service';
 import { InvoicingCalculationsService } from 'src/common/calculations/services/invoicing.calculations.service';
 import { LineItem } from 'src/common/calculations/interfaces/line-item.interface';
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
 import { QueryBuilder } from 'src/common/database/utils/database-query-builder';
-import { EntityManager, FindOneOptions, IsNull, Like, Not } from 'typeorm';
+import { EntityManager, FindOneOptions, In, IsNull, Like, Not } from 'typeorm';
 import { ArticleExpensQuotationEntryTaxService } from './article-expensquotation-entry-tax.service';
 import { CreateArticleExpensQuotationEntryDto } from '../dtos/article-expensquotation-entry.create.dto';
 import { ResponseArticleExpensQuotationEntryDto } from '../dtos/article-expensquotation-entry.response.dto';
 import { ExpenseArticleQuotationEntryRepository } from '../repositories/repository/article-expensquotation-entry.repository';
-import { ArticleStatus } from 'src/modules/article/interfaces/article-data.interface';
-import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
 import { ArticleExpensQuotationEntryTaxEntity } from '../repositories/entities/article-expensquotation-entry-tax.entity';
+import { TaxEntity } from 'src/modules/tax/repositories/entities/tax.entity';
+import { ArticleService } from 'src/modules/article/article/services/article.service';
+import { ArticleEntity } from 'src/modules/article/article/repositories/entities/article.entity';
 
 @Injectable()
 export class ArticleExpensQuotationEntryService {
@@ -101,10 +101,11 @@ export class ArticleExpensQuotationEntryService {
                 article.unitPrice = createArticleExpensQuotationEntryDto.unit_price;
             }
 
-            await this.articleService.update(article.id, {
-                quantityInStock: article.quantityInStock,
-                unitPrice: article.unitPrice
-            });
+           await this.articleService.update(article.id, {
+    reference: article.reference,  // Include the reference
+    quantityInStock: article.quantityInStock,
+    unitPrice: article.unitPrice
+});
         }
         // CAS 2: Nouvel article à créer ou article existant par référence
         else {
@@ -131,10 +132,11 @@ export class ArticleExpensQuotationEntryService {
                     article.unitPrice = createArticleExpensQuotationEntryDto.unit_price;
                 }
 
-                await this.articleService.update(article.id, {
-                    quantityInStock: article.quantityInStock,
-                    unitPrice: article.unitPrice
-                });
+               await this.articleService.update(article.id, {
+    reference: article.reference,  // Include the reference
+    quantityInStock: article.quantityInStock,
+    unitPrice: article.unitPrice
+});
             } else {
                 // Création d'un nouvel article
                 if (!articleTitle) {
@@ -250,118 +252,117 @@ export class ArticleExpensQuotationEntryService {
             queryOptions as FindOneOptions<ArticleExpensQuotationEntryEntity>,
         );
     }
+async update(id: number, updateDto: Partial<CreateArticleExpensQuotationEntryDto>) {
+  return this.entityManager.transaction(async (transactionalEntityManager) => {
+    // 1. Récupérer l'entrée avec lock PESSIMISTIC_WRITE
+    const existingEntry = await transactionalEntityManager.findOne(
+      ArticleExpensQuotationEntryEntity,
+      {
+        where: { id },
+        relations: ['article'],
+        lock: { mode: "pessimistic_write" }
+      }
+    );
 
-    async update(
-        id: number,
-        updateDto: Partial<CreateArticleExpensQuotationEntryDto>,
-    ): Promise<ArticleExpensQuotationEntryEntity> {
-        return this.entityManager.transaction(async (transactionalEntityManager) => {
-            // 1. Récupérer l'entrée existante avec ses relations
-            const existingEntry = await transactionalEntityManager.findOne(
-                ArticleExpensQuotationEntryEntity,
-                {
-                    where: { id },
-                    relations: ['articleExpensQuotationEntryTaxes', 'article'],
-                    lock: { mode: "pessimistic_write" }
-                }
-            );
-    
-            if (!existingEntry) {
-                throw new Error(`Article quotation entry with ID ${id} not found`);
-            }
-    
-            // 2. Mise à jour complète de l'article associé s'il existe
-            let article = existingEntry.article;
-            if (article) {
-                // Préparation des données de mise à jour - AJOUT DES CHAMPS TITLE ET DESCRIPTION
-                const articleUpdateData = {
-                    title: updateDto.article?.title ?? article.title, // Prend le titre du DTO ou conserve l'ancien
-                    description: updateDto.article?.description ?? article.description, // Prend la description du DTO ou conserve l'ancienne
-                    reference: updateDto.reference ?? article.reference,
-                    unitPrice: updateDto.unit_price ?? article.unitPrice,
-                    // quantityInStock sera mis à jour après calcul
-                };
-    
-                // Calcul de la différence de quantité
-                const oldQuantity = existingEntry.quantity;
-                const newQuantity = updateDto.quantity ?? oldQuantity;
-                const quantityDifference = newQuantity - oldQuantity;
-                const newStock = article.quantityInStock - quantityDifference;
-    
-                if (newStock < 0) {
-                    throw new BadRequestException(
-                        `Stock insuffisant. Disponible: ${article.quantityInStock}, Demandé: ${newQuantity}`
-                    );
-                }
-    
-                // Mise à jour complète de l'article
-                await transactionalEntityManager.update(
-                    ArticleEntity,
-                    article.id,
-                    {
-                        ...articleUpdateData,
-                        quantityInStock: newStock
-                    }
-                );
-    
-                // Recharger l'article pour avoir les dernières données
-                article = await transactionalEntityManager.findOne(
-                    ArticleEntity, 
-                    { where: { id: article.id } }
-                );
-            }
-    
-            // 3. Mise à jour des taxes
-            if (updateDto.taxes) {
-                // Supprimer les anciennes taxes
-                await transactionalEntityManager.delete(
-                    ArticleExpensQuotationEntryTaxEntity,
-                    { expenseArticleEntryId: id }
-                );
-    
-                // Ajouter les nouvelles taxes
-                await this.expensQuotationEntryTaxService.saveMany(
-                    updateDto.taxes.map(taxId => ({
-                        taxId,
-                        expenseArticleEntryId: id
-                    })),
-                );
-            }
-    
-            // 4. Calcul des nouveaux totaux
-            const taxes = updateDto.taxes 
-                ? await Promise.all(updateDto.taxes.map(id => this.taxService.findOneById(id)))
-                : existingEntry.articleExpensQuotationEntryTaxes?.map(tax => tax.tax) || [];
-    
-            const lineItem = {
-                quantity: updateDto.quantity ?? existingEntry.quantity,
-                unit_price: updateDto.unit_price ?? existingEntry.unit_price,
-                discount: updateDto.discount ?? existingEntry.discount,
-                discount_type: updateDto.discount_type ?? existingEntry.discount_type,
-                taxes
-            };
-    
-            const subTotal = this.calculationsService.calculateSubTotalForLineItem(lineItem);
-            const total = this.calculationsService.calculateTotalForLineItem(lineItem);
-    
-            // 5. Mise à jour de l'entrée de devis
-            const updatedEntry = await transactionalEntityManager.save(
-                ArticleExpensQuotationEntryEntity,
-                {
-                    ...existingEntry,
-                    ...updateDto,
-                    articleId: article?.id,
-                    article,
-                    subTotal,
-                    total,
-                    originalStock: article ? article.quantityInStock + (updateDto.quantity ?? existingEntry.quantity) : null
-                }
-            );
-    
-            return updatedEntry;
-        });
+    if (!existingEntry) {
+      throw new NotFoundException(`Article quotation entry with ID ${id} not found`);
     }
 
+    // 2. Gestion de l'article
+    if (existingEntry.article) {
+      const newQuantity = updateDto.quantity ?? existingEntry.quantity;
+      const quantityDifference = newQuantity - existingEntry.quantity;
+      const newStock = existingEntry.article.quantityInStock - quantityDifference;
+
+      if (newStock < 0) {
+        throw new BadRequestException(
+          `Stock insuffisant. Disponible: ${existingEntry.article.quantityInStock}, Demandé: ${newQuantity}`
+        );
+      }
+
+      await transactionalEntityManager.update(
+        ArticleEntity,
+        existingEntry.article.id,
+        {
+          title: updateDto.article?.title ?? existingEntry.article.title,
+          description: updateDto.article?.description ?? existingEntry.article.description,
+          reference: updateDto.reference ?? existingEntry.article.reference,
+          unitPrice: updateDto.unit_price ?? existingEntry.article.unitPrice,
+          quantityInStock: newStock
+        }
+      );
+    }
+
+    // 3. Gestion des taxes - APPROCHE REVISITÉE
+    if (updateDto.taxes !== undefined) {
+      // D'abord charger les taxes existantes
+      const existingTaxes = await transactionalEntityManager.find(
+        ArticleExpensQuotationEntryTaxEntity,
+        { where: { expenseArticleEntryId: id } }
+      );
+
+      // Supprimer les taxes qui ne sont plus dans la liste
+      const taxesToRemove = existingTaxes.filter(
+        tax => !updateDto.taxes?.includes(tax.taxId)
+      );
+      
+      if (taxesToRemove.length > 0) {
+        await transactionalEntityManager.remove(taxesToRemove);
+      }
+
+      // Ajouter les nouvelles taxes qui ne sont pas déjà présentes
+      const existingTaxIds = existingTaxes.map(tax => tax.taxId);
+      const taxesToAdd = (updateDto.taxes || [])
+        .filter(taxId => !existingTaxIds.includes(taxId))
+        .map(taxId => {
+          const newTax = new ArticleExpensQuotationEntryTaxEntity();
+          newTax.expenseArticleEntryId = id;
+          newTax.taxId = taxId;
+          return newTax;
+        });
+
+      if (taxesToAdd.length > 0) {
+        await transactionalEntityManager.save(taxesToAdd);
+      }
+    }
+
+    // 4. Calcul des totaux
+    const taxes = updateDto.taxes !== undefined
+      ? await transactionalEntityManager.find(TaxEntity, {
+          where: { id: In(updateDto.taxes || []) }
+        })
+      : existingEntry.articleExpensQuotationEntryTaxes?.map(t => t.tax) || [];
+
+    const subTotal = this.calculationsService.calculateSubTotalForLineItem({
+      quantity: updateDto.quantity ?? existingEntry.quantity,
+      unit_price: updateDto.unit_price ?? existingEntry.unit_price,
+      discount: updateDto.discount ?? existingEntry.discount,
+      discount_type: updateDto.discount_type ?? existingEntry.discount_type,
+      taxes
+    });
+
+    const total = this.calculationsService.calculateTotalForLineItem({
+      quantity: updateDto.quantity ?? existingEntry.quantity,
+      unit_price: updateDto.unit_price ?? existingEntry.unit_price,
+      discount: updateDto.discount ?? existingEntry.discount,
+      discount_type: updateDto.discount_type ?? existingEntry.discount_type,
+      taxes
+    });
+
+    // 5. Mise à jour finale
+    const updatedEntry = await transactionalEntityManager.save(ArticleExpensQuotationEntryEntity, {
+      ...existingEntry,
+      ...updateDto,
+      subTotal,
+      total,
+      originalStock: existingEntry.article 
+        ? existingEntry.article.quantityInStock + (updateDto.quantity ?? existingEntry.quantity) 
+        : null
+    });
+
+    return updatedEntry;
+  });
+}
     async duplicate(
         id: number,
         newExpensQuotationId: number, // Renommé pour plus de clarté

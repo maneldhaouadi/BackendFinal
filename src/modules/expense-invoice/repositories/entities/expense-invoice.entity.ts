@@ -153,5 +153,13 @@ uploadPdfField: UploadEntity;
 @Column({ type: 'int', nullable: true })
 pdfFileId: number;
 
+
+@ManyToOne(() => Template, { nullable: true })
+@JoinColumn({ name: "templateId" })
+template: Template;
+
+@Column({ nullable: true })
+templateId: number;
+
 }
 

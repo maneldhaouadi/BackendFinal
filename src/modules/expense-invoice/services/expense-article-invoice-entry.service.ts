@@ -1,7 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { TaxService } from 'src/modules/tax/services/tax.service';
-import { ArticleService } from 'src/modules/article/services/article.service';
-import { ResponseArticleDto } from 'src/modules/article/dtos/article.response.dto';
 import { InvoicingCalculationsService } from 'src/common/calculations/services/invoicing.calculations.service';
 import { LineItem } from 'src/common/calculations/interfaces/line-item.interface';
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
@@ -14,9 +12,8 @@ import { ExpenseArticleInvoiceEntryEntity } from '../repositories/entities/expen
 import { ExpenseCreateArticleInvoiceEntryDto } from '../dtos/expense-article-invoice-entry.create.dto';
 import { ExpenseUpdateArticleInvoiceEntryDto } from '../dtos/expense-article-invoice-entry.update.dto';
 import { ExpenseArticleInvoiceEntryNotFoundException } from '../errors/expense-article-invoice-entry.notfound.error';
-import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
-import { UpdateArticleDto } from 'src/modules/article/dtos/article.update.dto';
-import { ArticleStatus } from 'src/modules/article/interfaces/article-data.interface';
+import { ArticleService } from 'src/modules/article/article/services/article.service';
+import { UpdateArticleDto } from 'src/modules/article/article/dtos/article.update.dto';
 
 @Injectable()
 export class ExpenseArticleInvoiceEntryService {
@@ -111,9 +108,10 @@ export class ExpenseArticleInvoiceEntryService {
     } else {
       // Mettre à jour l'article existant sans historique
       await this.articleService.update(article.id, {
-        quantityInStock: (article.quantityInStock || 0) - (createArticleInvoiceEntryDto.quantity || 0),
-        unitPrice: createArticleInvoiceEntryDto.unit_price || article.unitPrice || 0
-      });
+    reference: article.reference, // Include the existing reference
+    quantityInStock: article.quantityInStock,
+    unitPrice: article.unitPrice
+});
     }
   
     // Créer l'entrée de facture

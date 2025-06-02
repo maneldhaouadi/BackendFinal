@@ -10,7 +10,7 @@ import {
 } from 'typeorm';
 import { ExpenseArticleInvoiceEntryTaxEntity } from './expense-article-invoice-entry-tax.entity';
 import { ExpenseInvoiceEntity } from './expense-invoice.entity';
-import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
+import { ArticleEntity } from 'src/modules/article/article/repositories/entities/article.entity';
 
 @Entity('article-expense-invoice-entry')
 export class ExpenseArticleInvoiceEntryEntity extends EntityHelper {

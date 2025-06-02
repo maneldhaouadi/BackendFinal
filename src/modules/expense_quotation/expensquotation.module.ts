@@ -10,7 +10,6 @@ import { GatewaysModule } from 'src/common/gateways/gateways.module';
 import { ExpensQuotationMetaDataService } from './services/expensquotation-meta-data.service';
 import { StorageModule } from 'src/common/storage/storage.module';
 import { ExpensQuotationUploadService } from './services/expensquotation-upload.service';
-import { ArticleModule } from 'src/modules/article/article.module';
 import { BankAccountModule } from 'src/modules/bank-account/bank-account.module';
 import { CurrencyModule } from 'src/modules/currency/currency.module';
 import { FirmModule } from 'src/modules/firm/firm.module';
@@ -20,6 +19,7 @@ import { TaxModule } from 'src/modules/tax/tax.module';
 import { ExpensQuotationController } from './controllers/expensquotation.controller';
 import { QuotationRepositoryModule } from './repositories/expensquotation.repository.module';
 import { TemplateModule } from '../template/template.module';
+import { ArticleModule } from '../article/article/article.module';
 
 @Module({
   controllers: [ExpensQuotationController], // Ajout du contrôleur ici

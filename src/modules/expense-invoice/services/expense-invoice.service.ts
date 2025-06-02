@@ -26,10 +26,8 @@ import { EXPENSE_INVOICE_STATUS } from "../enums/expense-invoice-status.enum";
 import { ExpenseUpdateInvoiceDto } from "../dtos/expense-invoice.update.dto";
 import { QueryDeepPartialEntity } from "typeorm/query-builder/QueryPartialEntity";
 import { ExpenseDuplicateInvoiceDto } from "../dtos/expense-invoice.duplicate.dto";
-import { ExpensQuotationEntity } from "src/modules/expense_quotation/repositories/entities/expensquotation.entity";
 import { StorageService } from "src/common/storage/services/storage.service";
 import { ExpenseResponseInvoiceUploadDto } from "../dtos/expense-invoice-upload.response.dto";
-import { ExpensQuotationService } from "src/modules/expense_quotation/services/expensquotation.service";
 import { TemplateService } from "src/modules/template/services/template.service";
 import { TemplateType } from "src/modules/template/enums/TemplateType";
 import ejs from "ejs";
@@ -54,7 +52,6 @@ export class ExpenseInvoiceService {
     //abstract services
     private readonly calculationsService: InvoicingCalculationsService,
     private readonly pdfService: PdfService,
-    private readonly expenseQuotationService:ExpensQuotationService,
     private readonly templateService:TemplateService
   ) {}
  
@@ -262,39 +259,6 @@ private async generateSequentialNumber(): Promise<string> {
     return invoices;
   }
 
-  @Transactional()
-  async saveFromQuotation(quotation: ExpensQuotationEntity): Promise<ExpenseInvoiceEntity> {
-    return this.save({
-      quotationId: quotation.id,
-      currencyId: quotation.currencyId,
-      bankAccountId: quotation.bankAccountId,
-      interlocutorId: quotation.interlocutorId,
-      firmId: quotation.firmId,
-      discount: quotation.discount,
-      discount_type: quotation.discount_type,
-      object: quotation.object,
-      status: EXPENSE_INVOICE_STATUS.Draft,
-      date: new Date(),
-      dueDate: null,
-      articleInvoiceEntries: quotation.expensearticleQuotationEntries.map((entry) => {
-        return {
-          unit_price: entry.unit_price,
-          quantity: entry.quantity,
-          discount: entry.discount,
-          discount_type: entry.discount_type,
-          subTotal: entry.subTotal,
-          total: entry.total,
-          articleId: entry.article.id,
-          article: entry.article,
-          reference:entry.reference,
-          taxes: entry.articleExpensQuotationEntryTaxes.map((entry) => {
-            return entry.taxId;
-          }),
-        };
-      }),
-    });
-  }
-
   async update(
     id: number,
     updateInvoiceDto: ExpenseUpdateInvoiceDto,
@@ -303,60 +267,60 @@ private async generateSequentialNumber(): Promise<string> {
     if (!existingInvoice) {
       throw new Error('Invoice not found');
     }
-  
+
     console.log('PDF File ID reçu du frontend:', updateInvoiceDto.pdfFileId);
     console.log('IDs des fichiers supplémentaires reçus du frontend:', updateInvoiceDto.uploads?.map(u => u.uploadId));
-  
+
     const existingUploadEntities = await this.invoiceUploadService.findByInvoiceId(id);
     const existingUploads = existingUploadEntities.map(upload => ({
       id: upload.id,
       uploadId: upload.uploadId,
     }));
-  
+
     const { keptUploads, newUploads, eliminatedUploads } = await this.updateExpenseInvoiceUpload(
       id,
       updateInvoiceDto,
       existingUploads,
     );
-  
+
     const sequentialNumbr = updateInvoiceDto.sequentialNumbr || existingInvoice.sequentialNumbr || null;
-  
+
     const [firm, bankAccount, currency] = await Promise.all([
       this.firmService.findOneByCondition({ filter: `id||$eq||${updateInvoiceDto.firmId}` }),
       updateInvoiceDto.bankAccountId ? this.bankAccountService.findOneById(updateInvoiceDto.bankAccountId) : null,
       updateInvoiceDto.currencyId ? this.currencyService.findOneById(updateInvoiceDto.currencyId) : null,
     ]);
-  
+
     if (!firm) {
       throw new Error('Firm not found');
     }
-  
+
     const articleEntries = updateInvoiceDto.articleInvoiceEntries && await this.articleInvoiceEntryService.saveMany(
       updateInvoiceDto.articleInvoiceEntries,
     );
-  
+
     if (!articleEntries) {
       throw new Error('Article entries are missing');
     }
-  
+
     const { subTotal, total } = this.calculationsService.calculateLineItemsTotal(
       articleEntries.map(entry => entry.total),
       articleEntries.map(entry => entry.subTotal),
     );
-  
+
     const taxStamp = updateInvoiceDto.taxStampId ? await this.taxService.findOneById(updateInvoiceDto.taxStampId) : null;
-  
+
     const totalAfterGeneralDiscount = this.calculationsService.calculateTotalDiscount(
       total,
       updateInvoiceDto.discount,
       updateInvoiceDto.discount_type,
       taxStamp?.value || 0,
     );
-  
+
     const lineItems = await this.articleInvoiceEntryService.findManyAsLineItem(
       articleEntries.map(entry => entry.id),
     );
-  
+
     const taxSummary = await Promise.all(
       this.calculationsService.calculateTaxSummary(lineItems).map(async (item) => {
         const tax = await this.taxService.findOneById(item.taxId);
@@ -368,12 +332,12 @@ private async generateSequentialNumber(): Promise<string> {
         };
       }),
     );
-  
+
     const invoiceMetaData = await this.invoiceMetaDataService.save({
       ...updateInvoiceDto.invoiceMetaData,
       taxSummary,
     });
-  
+
     let taxWithholdingAmount = 0;
     if (updateInvoiceDto.taxWithholdingId) {
       const taxWithholding = await this.taxWithholdingService.findOneById(updateInvoiceDto.taxWithholdingId);
@@ -381,13 +345,14 @@ private async generateSequentialNumber(): Promise<string> {
         taxWithholdingAmount = totalAfterGeneralDiscount * (taxWithholding.rate / 100);
       }
     }
-  
+
+    // Gestion du fichier PDF - seulement si différent de l'existant
     let pdfFileId = existingInvoice.pdfFileId;
-    if (updateInvoiceDto.pdfFileId) {
-      console.log('PDF File ID reçu du frontend:', updateInvoiceDto.pdfFileId);
+    if (updateInvoiceDto.pdfFileId && updateInvoiceDto.pdfFileId !== existingInvoice.pdfFileId) {
+      console.log('Nouveau PDF File ID reçu du frontend:', updateInvoiceDto.pdfFileId);
       pdfFileId = updateInvoiceDto.pdfFileId;
     }
-  
+
     const updatedInvoice = await this.invoiceRepository.save({
       ...updateInvoiceDto,
       sequential: sequentialNumbr,
@@ -401,19 +366,7 @@ private async generateSequentialNumber(): Promise<string> {
       total: totalAfterGeneralDiscount,
       pdfFileId,
     });
-  
-    // Dans la fonction update, supprimez cette partie :
-if (updateInvoiceDto.uploads) {
-  console.log('Uploads reçus du frontend:', updateInvoiceDto.uploads);
-  await Promise.all(
-    updateInvoiceDto.uploads.map((u) => {
-      console.log('Upload ID:', u.uploadId);
-      return this.invoiceUploadService.save(updatedInvoice.id, u.uploadId);
-    }),
-  );
-}
-  
-    console.log('Updated Invoice:', updatedInvoice);
+
     return updatedInvoice;
   }
   
@@ -620,7 +573,6 @@ if (updateInvoiceDto.uploads) {
  
   }
   async generateInvoicePdf(invoiceId: number, templateId?: number): Promise<Buffer> {
-    // 1. Récupérer la facture avec toutes les relations nécessaires
     const invoice = await this.invoiceRepository.findOne({
         where: { id: invoiceId },
         relations: [
@@ -644,7 +596,6 @@ if (updateInvoiceDto.uploads) {
         throw new NotFoundException(`Facture avec ID ${invoiceId} non trouvée`);
     }
 
-    // 2. Récupérer le template
     const template = templateId 
         ? await this.templateService.getTemplateById(templateId)
         : await this.templateService.getDefaultTemplate(TemplateType.INVOICE);
@@ -653,76 +604,49 @@ if (updateInvoiceDto.uploads) {
         throw new NotFoundException('Aucun template de facture trouvé');
     }
 
-    // 3. Calculer les totaux
+    // Enregistrer l'id du template dans la facture (expense_invoice)
+    invoice.templateId = template.id;
+    await this.invoiceRepository.save(invoice);
+
+    // Calculs et préparation des données (inchangés)
     const totalTVA = this.calculationsService.calculateTotalTax(invoice);
     const totalFODEC = this.calculationsService.calculateFodec(invoice);
 
-    // 4. Préparer les données pour le template
     const templateData = {
         invoice: {
             ...invoice,
-            // Formatage des dates
             date: format(invoice.date, 'dd/MM/yyyy'),
             dueDate: invoice.dueDate ? format(invoice.dueDate, 'dd/MM/yyyy') : 'Non spécifié',
-            
-            // Articles avec formatage spécifique
             articles: invoice.articleExpenseEntries?.map(entry => ({
               reference: entry.article?.reference,
-                title: entry.article?.title,
-                description: entry.article?.description || '',
-                quantity: entry.quantity,
-                unit_price: entry.unit_price,
-                discount: entry.discount,
-                discount_type: entry.discount_type,
-                subTotal: entry.subTotal,
-                total: entry.total,
-                taxes: entry.expenseArticleInvoiceEntryTaxes?.map(taxEntry => ({
-                    label: taxEntry.tax?.label,
-                    rate: taxEntry.tax?.value,
-                    amount: taxEntry.tax?.value * entry.subTotal / 100
-                })) || []
+              title: entry.article?.title,
+              description: entry.article?.description || '',
+              quantity: entry.quantity,
+              unit_price: entry.unit_price,
+              discount: entry.discount,
+              discount_type: entry.discount_type,
+              subTotal: entry.subTotal,
+              total: entry.total,
+              taxes: entry.expenseArticleInvoiceEntryTaxes?.map(taxEntry => ({
+                  label: taxEntry.tax?.label,
+                  rate: taxEntry.tax?.value,
+                  amount: taxEntry.tax?.value * entry.subTotal / 100
+              })) || []
             })) || [],
-            
-            // Totaux calculés
             totalHT: invoice.subTotal,
             totalTVA,
             totalFODEC,
             total: invoice.total,
-            
-            // Gestion des valeurs nulles
             firm: {
                 ...invoice.firm,
-                deliveryAddress: invoice.firm.deliveryAddress || {
-                    address: '',
-                    zipcode: '',
-                    region: '',
-                    country: ''
-                },
-                invoicingAddress: invoice.firm.invoicingAddress || invoice.firm.deliveryAddress || {
-                    address: '',
-                    zipcode: '',
-                    region: '',
-                    country: ''
-                }
+                deliveryAddress: invoice.firm.deliveryAddress || { address: '', zipcode: '', region: '', country: '' },
+                invoicingAddress: invoice.firm.invoicingAddress || invoice.firm.deliveryAddress || { address: '', zipcode: '', region: '', country: '' }
             },
-            cabinet: invoice.cabinet || {
-                enterpriseName: '',
-                taxIdentificationNumber: '',
-                address: {
-                    address: '',
-                    zipcode: '',
-                    region: '',
-                    country: ''
-                },
-                phone: ''
-            },
-            currency: invoice.currency || {
-                symbol: '€'
-            }
+            cabinet: invoice.cabinet || { enterpriseName: '', taxIdentificationNumber: '', address: { address: '', zipcode: '', region: '', country: '' }, phone: '' },
+            currency: invoice.currency || { symbol: '€' }
         }
     };
 
-    // 5. Nettoyer et compiler le template
     const cleanedContent = template.content
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
@@ -731,7 +655,6 @@ if (updateInvoiceDto.uploads) {
 
     const compiledHtml = ejs.render(cleanedContent, templateData);
 
-    // 6. Générer le PDF
     return this.pdfService.generateFromHtml(compiledHtml, {
         format: 'A4',
         margin: { top: '20mm', right: '10mm', bottom: '20mm', left: '10mm' },

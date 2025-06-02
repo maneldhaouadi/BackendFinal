@@ -2,8 +2,6 @@ import { Injectable } from '@nestjs/common';
 import { ArticleQuotationEntryEntity } from '../repositories/entities/article-quotation-entry.entity';
 import { CreateArticleQuotationEntryDto } from '../dtos/article-quotation-entry.create.dto';
 import { TaxService } from 'src/modules/tax/services/tax.service';
-import { ArticleService } from 'src/modules/article/services/article.service';
-import { ResponseArticleDto } from 'src/modules/article/dtos/article.response.dto';
 import { UpdateArticleQuotationEntryDto } from '../dtos/article-quotation-entry.update.dto';
 import { InvoicingCalculationsService } from 'src/common/calculations/services/invoicing.calculations.service';
 import { ResponseArticleQuotationEntryDto } from '../dtos/article-quotation-entry.response.dto';
@@ -14,6 +12,7 @@ import { LineItem } from 'src/common/calculations/interfaces/line-item.interface
 import { IQueryObject } from 'src/common/database/interfaces/database-query-options.interface';
 import { QueryBuilder } from 'src/common/database/utils/database-query-builder';
 import { FindOneOptions } from 'typeorm';
+import { ArticleService } from 'src/modules/article/article/services/article.service';
 
 @Injectable()
 export class ArticleQuotationEntryService {

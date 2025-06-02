@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsEnum, IsNumber, IsOptional, IsInt, IsString, Matches, IsNotEmpty } from 'class-validator';
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
-import { CreateArticleDto } from 'src/modules/article/dtos/article.create.dto';
+import { CreateArticleDto } from 'src/modules/article/article/dtos/article.create.dto';
 
 export class CreateArticleExpensQuotationEntryDto {
   @ApiProperty({ example: 100.0, type: Number, required: false })

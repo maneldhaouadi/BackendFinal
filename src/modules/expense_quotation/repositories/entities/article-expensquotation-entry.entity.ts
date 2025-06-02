@@ -1,9 +1,9 @@
 import { EntityHelper } from 'src/common/database/interfaces/database.entity.interface';
-import { ArticleEntity } from 'src/modules/article/repositories/entities/article.entity';
 import { ExpensQuotationEntity } from './expensquotation.entity';
 import { Column, Entity, PrimaryGeneratedColumn, ManyToOne, JoinColumn, OneToMany } from 'typeorm';
 import { ArticleExpensQuotationEntryTaxEntity } from './article-expensquotation-entry-tax.entity';
 import { DISCOUNT_TYPES } from 'src/app/enums/discount-types.enum';
+import { ArticleEntity } from 'src/modules/article/article/repositories/entities/article.entity';
 
 @Entity('expense_article_quotation_entry') // Match the table name in SQL
 export class ArticleExpensQuotationEntryEntity extends EntityHelper {

@@ -31,7 +31,7 @@ import { ExpensQuotationUploadEntity } from '../repositories/entities/expensquot
 import { TemplateService } from 'src/modules/template/services/template.service';
 import { TemplateType } from 'src/modules/template/enums/TemplateType';
 import ejs from "ejs";
-import { ArticleService } from 'src/modules/article/services/article.service';
+import { ArticleService } from 'src/modules/article/article/services/article.service';
 
 
 
@@ -437,39 +437,7 @@ async save(createQuotationDto: CreateExpensQuotationDto): Promise<ExpensQuotatio
     return this.expensequotationRepository.deleteAll();
   }
 
-  async updateQuotationUploads(
-    id: number,
-    updateQuotationDto: UpdateExpensQuotationDto,
-    existingUploads: UpdateExpensQuotationDto[],
-  ) {
-    const newUploads = [];
-    const keptUploads = [];
-    const eliminatedUploads = [];
-
-    if (updateQuotationDto.uploads) {
-      for (const upload of existingUploads) {
-        const exists = updateQuotationDto.uploads.some(
-          (u) => u.id === upload.id,
-        );
-        if (!exists)
-          eliminatedUploads.push(
-            await this.expensequotationUploadService.softDelete(upload.id),
-          );
-        else keptUploads.push(upload);
-      }
-      for (const upload of updateQuotationDto.uploads) {
-        if (!upload.id)
-          newUploads.push(
-            await this.expensequotationUploadService.save(id, upload.uploadId),
-          );
-      }
-    }
-    return {
-      keptUploads,
-      newUploads,
-      eliminatedUploads,
-    };
-  }
+ 
 
   async updateStatus(
     id: number,
@@ -713,61 +681,6 @@ async save(createQuotationDto: CreateExpensQuotationDto): Promise<ExpensQuotatio
         return updatedQuotation;
     });
 }
-async updateExpenseQuotationUpload(
-  id: number,
-  updateQuotationDto: UpdateExpensQuotationDto,
-  existingUploads: ExpensQuotationUploadEntity[],
-) {
-  const newUploads: ExpensQuotationUploadEntity[] = [];
-  const keptUploads: ExpensQuotationUploadEntity[] = [];
-  const eliminatedUploads: ExpensQuotationUploadEntity[] = [];
-
-  if (updateQuotationDto.uploads) {
-    try {
-      // 1. Identifier les fichiers à supprimer
-      for (const existingUpload of existingUploads) {
-        const shouldKeep = updateQuotationDto.uploads.some(
-          u => u.uploadId === existingUpload.uploadId
-        );
-        
-        if (!shouldKeep) {
-          console.log(`Suppression du fichier avec ID: ${existingUpload.id}`);
-          const deletedUpload = await this.expensequotationUploadService.softDelete(existingUpload.id);
-          eliminatedUploads.push(deletedUpload);
-        } else {
-          keptUploads.push(existingUpload);
-        }
-      }
-
-      // 2. Identifier les nouveaux fichiers à ajouter
-      for (const newUploadDto of updateQuotationDto.uploads) {
-        const alreadyExists = existingUploads.some(
-          eu => eu.uploadId === newUploadDto.uploadId
-        );
-        
-        if (!alreadyExists) {
-          console.log(`Ajout d'un nouveau fichier avec uploadId: ${newUploadDto.uploadId} pour la quotation ${id}`);
-          const newUpload = await this.expensequotationUploadService.create({
-            expensequotationId: id, // Ici on s'assure que l'ID est bien passé
-            uploadId: newUploadDto.uploadId
-          });
-          
-          // Vérification que l'ID a bien été enregistré
-          if (!newUpload.expensequotationId) {
-            throw new Error(`Failed to associate upload ${newUploadDto.uploadId} with quotation ${id}`);
-          }
-          
-          newUploads.push(newUpload);
-        }
-      }
-    } catch (error) {
-      console.error('Erreur lors de la gestion des fichiers:', error);
-      throw new Error('Failed to update quotation uploads');
-    }
-  }
-
-  return { keptUploads, newUploads, eliminatedUploads };
-}
 
 async duplicate(
   duplicateQuotationDto: DuplicateExpensQuotationDto,
@@ -936,7 +849,6 @@ async updateQuotationStatusIfExpired(quotationId: number): Promise<ExpensQuotati
             'expensearticleQuotationEntries.articleExpensQuotationEntryTaxes',
             'expensearticleQuotationEntries.articleExpensQuotationEntryTaxes.tax',
             'currency',
-            'expensequotationMetaData',
             'cabinet',
             'cabinet.address',
             'bankAccount',

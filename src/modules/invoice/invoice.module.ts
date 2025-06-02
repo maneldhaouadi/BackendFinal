@@ -3,7 +3,6 @@ import { CurrencyModule } from '../currency/currency.module';
 import { FirmModule } from '../firm/firm.module';
 import { InterlocutorModule } from '../interlocutor/Interlocutor.module';
 import { TaxModule } from '../tax/tax.module';
-import { ArticleModule } from '../article/article.module';
 import { PdfModule } from 'src/common/pdf/pdf.module';
 import { CalculationsModule } from 'src/common/calculations/calculations.module';
 import { AppConfigModule } from 'src/common/app-config/app-config.module';
@@ -18,6 +17,7 @@ import { ArticleInvoiceEntryService } from './services/article-invoice-entry.ser
 import { ArticleInvoiceEntryTaxService } from './services/article-invoice-entry-tax.service';
 import { InvoiceRepositoryModule } from './repositories/invoice.repository.module';
 import { TaxWithholdingModule } from '../tax-withholding/tax-withholding.module';
+import { ArticleModule } from '../article/article/article.module';
 
 @Module({
   controllers: [],

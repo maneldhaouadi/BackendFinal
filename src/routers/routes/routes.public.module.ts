@@ -12,10 +12,6 @@ import { ActivityModule } from 'src/modules/activity/activity.module';
 import { ActivityController } from 'src/modules/activity/controllers/activity.controller';
 import { AddressModule } from 'src/modules/address/address.module';
 import { AddressController } from 'src/modules/address/controllers/address.controller';
-import { ArticleHistoryModule } from 'src/modules/article-history/article-history.module';
-import { ArticleHistoryController } from 'src/modules/article-history/controllers/article-history.controller';
-import { ArticleModule } from 'src/modules/article/article.module';
-import { ArticleController } from 'src/modules/article/controllers/article.controller';
 import { BankAccountModule } from 'src/modules/bank-account/bank-account.module';
 import { BankAccountController } from 'src/modules/bank-account/controllers/bank-account.controller';
 import { CabinetModule } from 'src/modules/cabinet/cabinet.module';
@@ -42,8 +38,7 @@ import { InterlocutorModule } from 'src/modules/interlocutor/Interlocutor.module
 import { InterlocutorController } from 'src/modules/interlocutor/controllers/interlocutor.controller';
 import { InvoiceController } from 'src/modules/invoice/controllers/invoice.controller';
 import { InvoiceModule } from 'src/modules/invoice/invoice.module';
-import { OcrController } from 'src/modules/ocr/controllers/ocr.controller';
-import { OcrModule } from 'src/modules/ocr/ocr.module';
+
 import { PaymentConditionController } from 'src/modules/payment-condition/controllers/payment-condition.controller';
 import { PaymentConditionModule } from 'src/modules/payment-condition/payment-condition.module';
 import { PaymentController } from 'src/modules/payment/controllers/payment.controller';
@@ -64,6 +59,12 @@ import { FirmInterlocutorEntryController } from 'src/modules/firm-interlocutor-e
 import { PdfModule } from 'src/modules/pdf-extraction/pdf.module';
 import { TemplateModule } from 'src/modules/template/template.module';
 import { TemplateController } from 'src/modules/template/controllers/Template.controller';
+import { ArticleController } from 'src/modules/article/article/controllers/article.controller';
+import { ArticleHistoryController } from 'src/modules/article-history/article-history/controllers/article-history.controller';
+import { OcrController } from 'src/modules/ocr/ocr/controllers/ocr.controller';
+import { ArticleModule } from 'src/modules/article/article/article.module';
+import { ArticleHistoryModule } from 'src/modules/article-history/article-history/article-history.module';
+import { OcrModule } from 'src/modules/ocr/ocr/ocr.module';
 
 @Module({
   controllers: [

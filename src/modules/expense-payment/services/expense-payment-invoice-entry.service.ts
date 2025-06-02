@@ -13,9 +13,7 @@ import { ExpensePaymentInvoiceEntryNotFoundException } from '../errors/expense-p
 import { ExpenseCreatePaymentInvoiceEntryDto } from '../dtos/expense-payment-invoice-entry.create.dto';
 import { UpdateExpensePaymentInvoiceEntryDto } from '../dtos/expense-payment-invoice-entry.update.dto';
 import { EXPENSE_INVOICE_STATUS } from 'src/modules/expense-invoice/enums/expense-invoice-status.enum';
-import { ExpenseInvoiceEntity } from 'src/modules/expense-invoice/repositories/entities/expense-invoice.entity';
 import { CurrencyService } from 'src/modules/currency/services/currency.service';
-import { CurrencyEntity } from 'src/modules/currency/repositories/entities/currency.entity';
 
 @Injectable()
 export class ExpensePaymentInvoiceEntryService {

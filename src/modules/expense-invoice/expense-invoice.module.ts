@@ -3,7 +3,6 @@ import { CurrencyModule } from '../currency/currency.module';
 import { FirmModule } from '../firm/firm.module';
 import { InterlocutorModule } from '../interlocutor/Interlocutor.module';
 import { TaxModule } from '../tax/tax.module';
-import { ArticleModule } from '../article/article.module';
 import { PdfModule } from 'src/common/pdf/pdf.module';
 import { CalculationsModule } from 'src/common/calculations/calculations.module';
 import { AppConfigModule } from 'src/common/app-config/app-config.module';
@@ -23,6 +22,7 @@ import { ExpensePaymentInvoiceEntryEntity } from '../expense-payment/repositorie
 import { ExpensePaymentModule } from '../expense-payment/expense-payment.module';
 import { ExpensePaymentInvoiceEntryService } from '../expense-payment/services/expense-payment-invoice-entry.service';
 import { TemplateModule } from '../template/template.module';
+import { ArticleModule } from '../article/article/article.module';
 
 @Module({
   controllers: [],
