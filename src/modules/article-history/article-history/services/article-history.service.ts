@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ArticleHistoryEntity } from '../repositories/entities/article-history.entity';
 import { ArticleHistoryRepository } from '../repositories/repository/article-history.repository';
 import { PdfService } from 'src/common/pdf/services/pdf.service';
