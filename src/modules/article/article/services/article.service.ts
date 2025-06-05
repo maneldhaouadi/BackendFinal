@@ -111,11 +111,19 @@ async unarchiveArticle(id: number): Promise<ArticleEntity> {
     };
   }
 
-  async softDelete(id: number): Promise<ArticleEntity> {
-    const article = await this.findOneById(id);
-    await this.articleRepository.softDelete(id);
-    return article;
-  }
+// Dans ArticleService
+async softDelete(id: number): Promise<ArticleEntity> {
+  console.log(`Attempting to soft delete article ${id}`);
+  const article = await this.findOneById(id);
+  console.log(`Article found: ${article?.id}`);
+  
+  this.permissionService.validateAction(article.status, ArticleAction.DELETE);
+  
+  await this.articleRepository.softDelete(id);
+  console.log(`Soft delete successful for article ${id}`);
+  
+  return article;
+}
 
   async getTopValuedArticles(): Promise<Array<{
     reference: string;
@@ -458,48 +466,77 @@ async restoreArticle(id: number): Promise<ResponseArticleDto> {
     }
   }
   
-  async update(
-    id: number,
-    updateData: UpdateArticleDto
-  ): Promise<ArticleEntity> {
-    // 1. Trouver l'article existant
-    const article = await this.findOneById(id);
-    
-    // 2. Vérifier les permissions
-    this.permissionService.validateAction(article.status, ArticleAction.UPDATE);
-  
-    // 3. Préparer les données de mise à jour
-    const updatePayload: Partial<ArticleEntity> = {
-      ...updateData,
-      version: article.version + 1,
-      updatedAt: new Date()
+async update(id: number, updateArticleDto: UpdateArticleDto): Promise<ArticleEntity> {
+    // Validation des champs numériques
+    const numericFields = {
+        quantityInStock: updateArticleDto.quantityInStock,
+        unitPrice: updateArticleDto.unitPrice
     };
-  
-    // 4. Exclure le fichier justificatif de la mise à jour
-    delete updatePayload.justificatifFile;
-    delete updatePayload.justificatifFileName;
-    delete updatePayload.justificatifMimeType;
-    delete updatePayload.justificatifFileSize;
-  
-    // 5. Gérer l'historique des modifications
-    const changes = this.getChanges(article, updatePayload);
-    if (Object.keys(changes).length > 0) {
-      await this.articleHistoryService.createHistoryEntry({
-        version: updatePayload.version,
-        changes,
-        articleId: id
-      });
-    }
-  
-    // 6. Appliquer la mise à jour
-    await this.articleRepository.update(id, updatePayload);
     
-    // 7. Retourner l'article mis à jour
-    return this.articleRepository.findOne({ 
-      where: { id },
-      relations: ['history'] 
+    for (const [field, value] of Object.entries(numericFields)) {
+        if (value !== undefined && isNaN(Number(value))) {
+            throw new BadRequestException(`${field} must be a valid number`);
+        }
+    }
+
+    // Récupérer l'article actuel avant modification
+    const currentArticle = await this.findOneById(id);
+
+    // Conversion des types et préparation des données de mise à jour
+    // avec incrémentation automatique de la version
+    const updateData = {
+        ...updateArticleDto,
+        quantityInStock: updateArticleDto.quantityInStock !== undefined 
+            ? Number(updateArticleDto.quantityInStock) 
+            : undefined,
+        unitPrice: updateArticleDto.unitPrice !== undefined 
+            ? Number(updateArticleDto.unitPrice) 
+            : undefined,
+        version: currentArticle.version + 1 // Incrémentation automatique de la version
+    };
+
+    // Mettre à jour l'article
+    await this.articleRepository.update(id, updateData);
+    
+    // Récupérer l'article mis à jour
+    const updatedArticle = await this.articleRepository.findOne({ 
+        where: { id },
+        relations: ['history']
     });
-  }
+
+    if (!updatedArticle) {
+        throw new NotFoundException(`Article avec ID ${id} non trouvé après mise à jour`);
+    }
+
+    // Créer un snapshot de l'article avant modification
+    const snapshot = {
+        title: currentArticle.title,
+        description: currentArticle.description,
+        reference: currentArticle.reference,
+        quantityInStock: currentArticle.quantityInStock,
+        unitPrice: currentArticle.unitPrice,
+        status: currentArticle.status,
+        version: currentArticle.version,
+        notes: currentArticle.notes,
+        createdAt: currentArticle.createdAt,
+        updatedAt: currentArticle.updatedAt
+    };
+
+    // Calculer les changements
+    const changes = this.getChanges(currentArticle, updatedArticle);
+
+    // Enregistrer dans l'historique seulement s'il y a des changements
+    if (Object.keys(changes).length > 0) {
+        await this.articleHistoryService.createHistoryEntry({
+            version: updatedArticle.version, // Utilise la nouvelle version incrémentée
+            changes,
+            articleId: id,
+            snapshot
+        });
+    }
+
+    return updatedArticle;
+}
 async findOneByReference(reference: string): Promise<ArticleEntity | null> {
     if (!reference) {
       return null;

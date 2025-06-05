@@ -54,7 +54,14 @@ export class ArticleController {
 
   ) {}
 
-
+@Delete('/delete/:id')
+@ApiOperation({ summary: 'Supprimer un article (soft delete)' })
+async delete(
+  @Param('id', ParseIntPipe) id: number
+): Promise<void> {
+  await this.articleService.softDelete(id);
+  // Retourne simplement un code 200 sans body
+}
   @Get('active')
   @ApiOperation({ summary: 'Get all active (non-archived) articles' })
   @ApiResponse({ 
@@ -404,21 +411,21 @@ async searchByTitle(
   return this.articleService.findAllPaginated(query);
 }
 
+@Put(':id')
+  async update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() updateArticleDto: UpdateArticleDto
+  ) {
+    // Conversion explicite des nombres
+    const updateData = {
+      ...updateArticleDto,
+      quantityInStock: updateArticleDto.quantityInStock ? Number(updateArticleDto.quantityInStock) : undefined,
+      unitPrice: updateArticleDto.unitPrice ? Number(updateArticleDto.unitPrice) : undefined,
+      version: updateArticleDto.version ? Number(updateArticleDto.version) : undefined
+    };
 
-@Put('/update/:id') 
-@UseInterceptors(ClassSerializerInterceptor)
-async update(
-  @Param('id', ParseIntPipe) id: number,
-  @Body() updateArticleDto: UpdateArticleDto,
-): Promise<ResponseArticleDto> {
-  // Conversion des types
-  if (updateArticleDto.unitPrice !== undefined) {
-    updateArticleDto.unitPrice = Number(updateArticleDto.unitPrice);
+    return this.articleService.update(id, updateData);
   }
-  
-  const updatedArticle = await this.articleService.update(id, updateArticleDto);
-  return this.mapToResponseDto(updatedArticle);
-}
 
   @Get('/:id')
   @ApiOperation({ summary: 'Obtenir un article par son ID' })
@@ -454,15 +461,6 @@ async getStockValueEvolution(
     return this.mapToResponseDto(article);
   }
 
-  @Delete('/delete/:id')
-  @ApiOperation({ summary: 'Supprimer un article (soft delete)' })
-  @ApiParam({ name: 'id', description: 'ID de l\'article à supprimer', type: Number })
-  async delete(
-    @Param('id', ParseIntPipe) id: number
-  ): Promise<ResponseArticleDto> {
-    const article = await this.articleService.softDelete(id);
-    return this.mapToResponseDto(article);
-  }
 
   @Post('/:id/restore-version/:version')
   @ApiOperation({ summary: 'Restaurer une version antérieure de l\'article' })

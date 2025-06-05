@@ -1,12 +1,30 @@
 import { ApiProperty } from '@nestjs/swagger';
 
 export class UpdateArticleHistoryDto {
-  @ApiProperty({ example: 2, description: 'Nouvelle version de l\'article' })
+  @ApiProperty({ 
+    example: 3, 
+    description: 'Nouveau numéro de version (optionnel)', 
+    required: false 
+  })
   version?: number;
 
   @ApiProperty({
-    example: { description: { oldValue: 'Ancienne description', newValue: 'Nouvelle description' } },
-    description: 'Nouvelles modifications apportées à l\'article',
+    example: {
+      status: {
+        oldValue: 'inactive',
+        newValue: 'active'
+      }
+    },
+    description: 'Modifications supplémentaires à enregistrer (optionnel)',
+    required: false,
+    type: 'object',
+    additionalProperties: {
+      type: 'object',
+      properties: {
+        oldValue: { type: 'any' },
+        newValue: { type: 'any' }
+      }
+    }
   })
   changes?: Record<string, { oldValue: any; newValue: any }>;
 }
